@@ -1,3 +1,4 @@
+pub mod derive;
 pub mod error;
 pub mod seed;
 

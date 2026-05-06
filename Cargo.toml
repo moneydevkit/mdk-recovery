@@ -7,4 +7,5 @@ edition = "2024"
 bip39 = "2"
 bitcoin = "0.32"
 clap = { version = "4", features = ["derive"] }
+lightning = { version = "0.2", default-features = false, features = ["std"] }
 thiserror = "2"
