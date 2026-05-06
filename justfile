@@ -1,8 +1,11 @@
 default:
     @just --list
 
+system := env("NIX_SYSTEM")
+
 # Run all checks (fmt, clippy, unit tests)
-check: fmt-check clippy test
+check:
+    nix flake check
 
 # Format code
 fmt:
@@ -11,12 +14,15 @@ fmt:
 
 # Check formatting
 fmt-check:
-    cargo fmt --check
-    nixfmt --check flake.nix
+    nix build .#checks.{{system}}.fmt
 
 # Run clippy
 clippy:
-    cargo clippy --all-targets -- --deny warnings
+    nix build .#checks.{{system}}.clippy
+
+# Run unit tests
+unit-test:
+    nix build .#checks.{{system}}.test
 
 # Run tests
 test *args:

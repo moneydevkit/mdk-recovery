@@ -8,6 +8,7 @@
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
@@ -15,6 +16,7 @@
       nixpkgs,
       flake-utils,
       fenix,
+      crane,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -30,8 +32,47 @@
           "rustc"
           "rustfmt"
         ];
+
+        craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+
+        src = craneLib.cleanCargoSource ./.;
+
+        commonArgs = {
+          inherit src;
+          strictDeps = true;
+        };
+
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
       in
       {
+        packages.default = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            doCheck = false;
+          }
+        );
+
+        checks = {
+          clippy = craneLib.cargoClippy (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+            }
+          );
+
+          fmt = craneLib.cargoFmt { inherit src; };
+
+          test = craneLib.cargoNextest (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoNextestExtraArgs = "--no-tests=pass";
+            }
+          );
+        };
+
         devShells.default = pkgs.mkShell {
           packages = [
             toolchain
