@@ -13,6 +13,9 @@ pub enum RecoveryError {
     #[error("recovery plan has no inputs to sweep")]
     EmptyInputs,
 
+    #[error("esplora backend error: {0}")]
+    Esplora(String),
+
     #[error("estimated fee {fee} exceeds total input value {total_in}")]
     FeeExceedsValue { fee: Amount, total_in: Amount },
 
