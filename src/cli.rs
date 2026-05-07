@@ -6,12 +6,13 @@
 //! logic) can be tested without going through clap.
 
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 use std::str::FromStr;
 
 use bip39::Mnemonic;
-use bitcoin::Network;
+use bitcoin::{Address, Network};
+use subtle::ConstantTimeEq;
 
 use crate::error::{RecoveryError, Result};
 
@@ -56,6 +57,34 @@ pub fn read_mnemonic(path: &str) -> Result<Mnemonic> {
 fn parse_mnemonic(raw: &str) -> Result<Mnemonic> {
     let normalised = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     Mnemonic::from_str(&normalised).map_err(|e| RecoveryError::InvalidMnemonic(e.to_string()))
+}
+
+/// Prompt the user to retype `expected` on stdin and constant-time
+/// compare. Echoes the input so the user can visually verify before
+/// hitting return; the constant-time check is just defence-in-depth
+/// against any future caller that might feed a comparison from an
+/// untrusted source.
+pub fn confirm_destination(expected: &Address) -> Result<()> {
+    let stderr = io::stderr();
+    let mut err = stderr.lock();
+    writeln!(err, "About to broadcast a sweep to: {expected}")?;
+    write!(err, "Re-type the destination address to confirm: ")?;
+    err.flush()?;
+
+    let mut input = String::new();
+    io::stdin().lock().read_line(&mut input)?;
+    check_destination(input.trim(), &expected.to_string())
+}
+
+/// Pure half of [`confirm_destination`]: assert `input` matches
+/// `expected` byte-for-byte in constant time. Split out so the
+/// matching logic is unit-testable without a stdin fixture.
+pub fn check_destination(input: &str, expected: &str) -> Result<()> {
+    if input.as_bytes().ct_eq(expected.as_bytes()).into() {
+        Ok(())
+    } else {
+        Err(RecoveryError::DestinationConfirmationMismatch)
+    }
 }
 
 /// Look up the esplora base URL for `network`. Mainnet/testnet/signet
@@ -114,6 +143,27 @@ mod tests {
         );
         assert!(endpoint_for(Network::Testnet).unwrap().contains("testnet"));
         assert!(endpoint_for(Network::Signet).unwrap().contains("signet"));
+    }
+
+    #[test]
+    fn check_destination_accepts_match_and_rejects_mismatch() {
+        let addr = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+        check_destination(addr, addr).expect("matching strings must pass");
+
+        // One-character substitution: the kind of typo the gate
+        // exists to catch.
+        let typo = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fy0";
+        assert!(matches!(
+            check_destination(typo, addr),
+            Err(RecoveryError::DestinationConfirmationMismatch)
+        ));
+
+        // Trailing garbage must not pass either.
+        let suffixed = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyux";
+        assert!(matches!(
+            check_destination(suffixed, addr),
+            Err(RecoveryError::DestinationConfirmationMismatch)
+        ));
     }
 
     #[test]

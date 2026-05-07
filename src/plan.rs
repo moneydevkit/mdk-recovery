@@ -22,13 +22,26 @@ use crate::error::{RecoveryError, Result};
 use bitcoin::address::NetworkUnchecked;
 use bitcoin::secp256k1::SecretKey;
 use bitcoin::{Address, Amount, Network, OutPoint, ScriptBuf};
+use serde::Serialize;
+use std::fmt;
+
+/// Default feerate when the caller doesn't specify one. Five sat/vB
+/// is comfortably above the long-term minimum-relay floor (1 sat/vB)
+/// and lands a sweep within a few blocks under typical mempool load
+/// without overpaying for a recovery that isn't time-sensitive.
+pub const DEFAULT_FEERATE_SAT_VB: u64 = 5;
 
 /// One on-chain UTXO we can sign for, tagged by the derivation path
 /// it came from. The variants carry exactly the data the signer needs:
 /// the prevout (for sighash), the script_pubkey (for sighash), the
 /// privkey (to sign), and for the anchor variant the redeem script
 /// (for the witness).
-#[derive(Debug, Clone)]
+///
+/// `privkey` is `#[serde(skip)]` on every variant: a `--json` render
+/// of a plan must never leak key material into a shell history or
+/// log file.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RecoveryInput {
     /// BIP-84 P2WPKH on the receive or change chain.
     Bip84 {
@@ -36,6 +49,7 @@ pub enum RecoveryInput {
         value: Amount,
         chain: Bip84Chain,
         idx: u32,
+        #[serde(skip)]
         privkey: SecretKey,
         script_pubkey: ScriptBuf,
     },
@@ -45,6 +59,7 @@ pub enum RecoveryInput {
         outpoint: OutPoint,
         value: Amount,
         idx: u16,
+        #[serde(skip)]
         privkey: SecretKey,
         script_pubkey: ScriptBuf,
     },
@@ -55,6 +70,7 @@ pub enum RecoveryInput {
         outpoint: OutPoint,
         value: Amount,
         idx: u16,
+        #[serde(skip)]
         privkey: SecretKey,
         redeem_script: ScriptBuf,
         script_pubkey: ScriptBuf,
@@ -105,7 +121,7 @@ impl RecoveryInput {
 /// away from a `Transaction`. Constructed only via `new()`, which
 /// validates the invariants the signer relies on; the public fields
 /// are kept readable so callers can render summaries without ceremony.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RecoveryPlan {
     pub network: Network,
     pub inputs: Vec<RecoveryInput>,
@@ -162,6 +178,38 @@ impl RecoveryPlan {
             estimated_fee,
             estimated_output,
         })
+    }
+}
+
+impl fmt::Display for RecoveryPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let total_in = self
+            .inputs
+            .iter()
+            .map(RecoveryInput::value)
+            .fold(Amount::ZERO, |a, b| a.checked_add(b).unwrap_or(Amount::MAX));
+
+        let mut bip84 = 0;
+        let mut srk_p2wpkh = 0;
+        let mut srk_anchor = 0;
+        for inp in &self.inputs {
+            match inp {
+                RecoveryInput::Bip84 { .. } => bip84 += 1,
+                RecoveryInput::StaticRemoteKeyP2wpkh { .. } => srk_p2wpkh += 1,
+                RecoveryInput::StaticRemoteKeyP2wshAnchor { .. } => srk_anchor += 1,
+            }
+        }
+
+        writeln!(f, "Recovery plan (network: {})", self.network)?;
+        writeln!(f, "  inputs: {} total", self.inputs.len())?;
+        writeln!(f, "    bip84:                       {bip84}")?;
+        writeln!(f, "    static_payment p2wpkh:       {srk_p2wpkh}")?;
+        writeln!(f, "    static_payment p2wsh-anchor: {srk_anchor}")?;
+        writeln!(f, "  destination:       {}", self.destination)?;
+        writeln!(f, "  feerate:           {} sat/vB", self.feerate_sat_vb)?;
+        writeln!(f, "  total input value: {total_in}")?;
+        writeln!(f, "  estimated fee:     {}", self.estimated_fee)?;
+        writeln!(f, "  estimated output:  {}", self.estimated_output)
     }
 }
 

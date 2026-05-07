@@ -747,6 +747,7 @@ dependencies = [
  "lightning",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror",
  "tokio",
 ]

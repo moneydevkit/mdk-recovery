@@ -12,12 +12,16 @@
 //! Sighash is BIP-143 SIGHASH_ALL throughout, computed via
 //! `SighashCache` for `O(n)` digesting across all inputs.
 
+use std::fmt;
+
 use bitcoin::absolute::LockTime;
+use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::ecdsa;
 use bitcoin::secp256k1::{All, Message, PublicKey, Secp256k1};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::transaction::Version;
-use bitcoin::{ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
+use bitcoin::{ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
+use serde::Serialize;
 
 use crate::plan::{RecoveryInput, RecoveryPlan};
 
@@ -67,6 +71,42 @@ pub fn sign_plan(plan: &RecoveryPlan) -> Transaction {
         tx.input[i].witness = witness;
     }
     tx
+}
+
+/// A signed sweep ready for broadcast. Carries the originating plan
+/// (for the rendered summary), the txid, and the consensus-encoded
+/// raw transaction as hex.
+#[derive(Debug, Clone, Serialize)]
+pub struct SignedSweep {
+    pub plan: RecoveryPlan,
+    pub txid: Txid,
+    pub raw_hex: String,
+}
+
+impl SignedSweep {
+    /// Sign `plan` and bundle the result with the wire-format hex.
+    pub fn from_plan(plan: RecoveryPlan) -> (Self, Transaction) {
+        let tx = sign_plan(&plan);
+        let txid = tx.compute_txid();
+        let raw_hex = serialize_hex(&tx);
+        (
+            Self {
+                plan,
+                txid,
+                raw_hex,
+            },
+            tx,
+        )
+    }
+}
+
+impl fmt::Display for SignedSweep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.plan)?;
+        writeln!(f, "Signed sweep:")?;
+        writeln!(f, "  txid:    {}", self.txid)?;
+        writeln!(f, "  raw_hex: {}", self.raw_hex)
+    }
 }
 
 fn nsequence_for(inp: &RecoveryInput) -> Sequence {
