@@ -15,13 +15,13 @@ use bitcoin::hashes::{Hash, sha256};
 use bitcoin::{ScriptBuf, Transaction, Txid};
 use esplora_client::AsyncClient;
 use futures::stream::{self, StreamExt, TryStreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{RecoveryError, Result};
 
 /// One unspent output as returned by esplora's
 /// `/scripthash/{hash}/utxo` endpoint.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Utxo {
     pub txid: Txid,
     pub vout: u32,
@@ -31,7 +31,7 @@ pub struct Utxo {
 
 /// Confirmation status for a UTXO. `block_height` is `None` while
 /// the funding tx sits in the mempool.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UtxoStatus {
     pub confirmed: bool,
     pub block_height: Option<u32>,

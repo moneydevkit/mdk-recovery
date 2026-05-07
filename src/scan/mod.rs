@@ -15,6 +15,7 @@ use bip39::Mnemonic;
 use bitcoin::address::NetworkUnchecked;
 use bitcoin::{Address, Amount, Network, OutPoint, ScriptBuf};
 use esplora_client::AsyncClient;
+use serde::Serialize;
 
 use crate::derive::bip84::{Bip84Chain, Bip84Entry, DEFAULT_GAP_LIMIT, bip84_entries};
 use crate::derive::static_payment::{StaticPaymentEntry, static_payment_entries};
@@ -26,14 +27,14 @@ use crate::seed::ldk_seed_and_master;
 /// One static_payment derivation that had at least one UTXO. The
 /// `entry` carries the keys; `utxos` is whichever non-empty list came
 /// back for the script flavour this hit represents.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct StaticPaymentHit {
     pub entry: StaticPaymentEntry,
     pub utxos: Vec<Utxo>,
 }
 
 /// One BIP-84 derivation that had at least one UTXO.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Bip84Hit {
     pub entry: Bip84Entry,
     pub utxos: Vec<Utxo>,
@@ -42,7 +43,7 @@ pub struct Bip84Hit {
 /// Outcome of a scan: every derivation that produced UTXOs, grouped
 /// by source. Empty buckets stay empty rather than carrying "no hits"
 /// sentinels — every entry in every vec is a real hit.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScanReport {
     pub network: Network,
     pub static_payment_p2wpkh: Vec<StaticPaymentHit>,
@@ -51,8 +52,9 @@ pub struct ScanReport {
 }
 
 /// Every script the seed can claim, paired with the entries the
-/// re-keying step needs to bind each script back to its keys.
-#[derive(Debug, Clone)]
+/// re-keying step needs to bind each script back to its keys. Doubles
+/// as the output of the offline `derive` subcommand.
+#[derive(Debug, Clone, Serialize)]
 pub struct Derived {
     pub network: Network,
     pub static_entries: Vec<StaticPaymentEntry>,
@@ -233,6 +235,35 @@ fn outpoint_of(utxo: &Utxo) -> OutPoint {
     OutPoint {
         txid: utxo.txid,
         vout: utxo.vout,
+    }
+}
+
+impl fmt::Display for Derived {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Derived scripts (network: {})", self.network)?;
+        writeln!(
+            f,
+            "  static_payment ({} entries):",
+            self.static_entries.len()
+        )?;
+        for entry in &self.static_entries {
+            writeln!(f, "    idx={} p2wpkh={}", entry.idx, entry.p2wpkh_spk)?;
+            writeln!(f, "    idx={} anchor={}", entry.idx, entry.anchor_p2wsh_spk)?;
+        }
+        writeln!(f, "  BIP-84 ({} entries):", self.bip84.len())?;
+        for entry in &self.bip84 {
+            let chain = match entry.chain {
+                Bip84Chain::External => "external",
+                Bip84Chain::Internal => "internal",
+            };
+            writeln!(
+                f,
+                "    {chain}/{idx} {spk}",
+                idx = entry.idx,
+                spk = entry.script_pubkey
+            )?;
+        }
+        Ok(())
     }
 }
 

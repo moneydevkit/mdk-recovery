@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod derive;
 pub mod error;
 pub mod plan;

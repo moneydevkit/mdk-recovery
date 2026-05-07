@@ -26,6 +26,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning::ln::chan_utils::get_countersigner_payment_script;
 use lightning::sign::STATIC_PAYMENT_KEY_COUNT;
 use lightning::types::features::ChannelTypeFeatures;
+use serde::Serialize;
 
 /// Hardened path index for the LDK static_payment branch (`m/8h`),
 /// mirroring `STATIC_PAYMENT_KEY_INDEX` in `KeysManager::new`. Upstream
@@ -36,9 +37,14 @@ const STATIC_PAYMENT_KEY_INDEX: u32 = 8;
 /// the two possible commitment-output script shapes (the only two LDK
 /// emits today: P2WPKH for non-anchor channels, P2WSH for anchor
 /// channels).
-#[derive(Debug, Clone)]
+///
+/// The secret key is omitted from the serde representation: `--json`
+/// callers should never accidentally leak it through a pipe; the
+/// structured key material stays in memory only.
+#[derive(Debug, Clone, Serialize)]
 pub struct StaticPaymentEntry {
     pub idx: u16,
+    #[serde(skip)]
     pub secret_key: SecretKey,
     pub public_key: PublicKey,
     /// Non-anchor `to_remote`: `OP_0 <HASH160(pubkey)>`.

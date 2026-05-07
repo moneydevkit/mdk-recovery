@@ -20,6 +20,7 @@ use bitcoin::WPubkeyHash;
 use bitcoin::bip32::{ChildNumber, Xpriv};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use serde::Serialize;
 
 /// Default BIP-44 / BIP-84 address-gap limit. Wallets stop scanning
 /// after this many consecutive unused addresses; we mirror the same
@@ -28,7 +29,8 @@ pub const DEFAULT_GAP_LIMIT: u32 = 20;
 
 /// Whether a BIP-84 address sits on the external (receive) chain or
 /// the internal (change) chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum Bip84Chain {
     External,
     Internal,
@@ -44,11 +46,15 @@ impl Bip84Chain {
     }
 }
 
-/// One BIP-84 derivation entry.
-#[derive(Debug, Clone)]
+/// One BIP-84 derivation entry. The secret key is omitted from the
+/// serde representation: `--json` callers should never accidentally
+/// leak it through a pipe; the structured key material stays in
+/// memory only.
+#[derive(Debug, Clone, Serialize)]
 pub struct Bip84Entry {
     pub chain: Bip84Chain,
     pub idx: u32,
+    #[serde(skip)]
     pub secret_key: SecretKey,
     pub public_key: PublicKey,
     pub script_pubkey: ScriptBuf,
