@@ -20,6 +20,8 @@
 use bitcoin::Network;
 use bitcoin::ScriptBuf;
 use bitcoin::bip32::{ChildNumber, Xpriv};
+use bitcoin::opcodes;
+use bitcoin::script::Builder;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning::ln::chan_utils::get_countersigner_payment_script;
 use lightning::sign::STATIC_PAYMENT_KEY_COUNT;
@@ -44,6 +46,20 @@ pub struct StaticPaymentEntry {
     /// Anchor `to_remote`: P2WSH wrapping
     /// `<pubkey> OP_CHECKSIGVERIFY 1 OP_CHECKSEQUENCEVERIFY`.
     pub anchor_p2wsh_spk: ScriptBuf,
+}
+
+impl StaticPaymentEntry {
+    /// Anchor-channel redeem script that hashes to `anchor_p2wsh_spk`.
+    /// Needed to build the witness when sweeping an anchor `to_remote`
+    /// output.
+    pub fn anchor_redeem_script(&self) -> ScriptBuf {
+        Builder::new()
+            .push_slice(self.public_key.serialize())
+            .push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
+            .push_int(1)
+            .push_opcode(opcodes::all::OP_CSV)
+            .into_script()
+    }
 }
 
 /// Enumerate all `STATIC_PAYMENT_KEY_COUNT` v2 static_payment entries
@@ -95,6 +111,8 @@ pub fn static_payment_entries(ldk_seed: &[u8; 32]) -> Vec<StaticPaymentEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcoin::WScriptHash;
+    use bitcoin::hashes::Hash;
     use lightning::sign::KeysManager;
 
     /// Arbitrary fixture LDK seed. The exact bytes are not magic; we
@@ -128,6 +146,18 @@ mod tests {
             assert_eq!(entry.idx, i as u16);
             assert_eq!(entry.p2wpkh_spk, upstream[i * 2]);
             assert_eq!(entry.anchor_p2wsh_spk, upstream[i * 2 + 1]);
+        }
+    }
+
+    #[test]
+    fn anchor_redeem_script_hashes_to_anchor_spk() {
+        // The redeem script we hand to the signer must hash to the
+        // P2WSH commitment we discovered on chain. Otherwise the
+        // witness will not satisfy the script_pubkey.
+        for entry in static_payment_entries(&LDK_SEED).iter().take(8) {
+            let redeem = entry.anchor_redeem_script();
+            let expected = ScriptBuf::new_p2wsh(&WScriptHash::hash(redeem.as_bytes()));
+            assert_eq!(expected, entry.anchor_p2wsh_spk);
         }
     }
 
