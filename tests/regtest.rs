@@ -30,24 +30,81 @@ async fn bip84_funds_are_swept() {
     let mnemonic = Mnemonic::parse(TEST_MNEMONIC).expect("parse mnemonic");
     let derived = mdk_recovery::scan::derive_all(&mnemonic, network);
 
-    let receive = derived.bip84.first().expect("at least one BIP-84 entry");
-    let receive_spk = receive.script_pubkey.clone();
-    let receive_addr = Address::from_script(&receive_spk, network).expect("script -> address");
+    let spk = derived
+        .bip84
+        .first()
+        .expect("at least one BIP-84 entry")
+        .script_pubkey
+        .clone();
+    fund_script(&bitcoind, &mock, &spk, Amount::from_sat(1_000_000), network).await;
 
-    mock.register_script(receive_spk).await;
+    let dest = sweep_to_fresh_address(&bitcoind, &mock.url(), TEST_MNEMONIC, network).await;
+    bitcoind.mine(1).await;
 
-    let funded = Amount::from_sat(1_000_000);
-    bitcoind.fund(&receive_addr, funded).await;
+    assert_dest_received(&bitcoind, &dest, Amount::from_sat(1_000_000)).await;
+}
 
+/// Same shape as the BIP-84 test, but the funded UTXO sits at the
+/// first enumerable static_remote_key P2WPKH script. Confirms we
+/// scan, sign, and broadcast against the v2 close-output path.
+#[tokio::test]
+async fn static_payment_p2wpkh_funds_are_swept() {
+    let network = Network::Regtest;
+    let bitcoind = TestBitcoind::new().await;
+    let mock = MockEsplora::start(bitcoind.rpc.clone()).await;
+
+    let mnemonic = Mnemonic::parse(TEST_MNEMONIC).expect("parse mnemonic");
+    let derived = mdk_recovery::scan::derive_all(&mnemonic, network);
+
+    let spk = derived
+        .static_entries
+        .first()
+        .expect("at least one static_payment entry")
+        .p2wpkh_spk
+        .clone();
+    fund_script(&bitcoind, &mock, &spk, Amount::from_sat(1_000_000), network).await;
+
+    let dest = sweep_to_fresh_address(&bitcoind, &mock.url(), TEST_MNEMONIC, network).await;
+    bitcoind.mine(1).await;
+
+    assert_dest_received(&bitcoind, &dest, Amount::from_sat(1_000_000)).await;
+}
+
+/// Register `spk` with the mock esplora so the scan finds it, then
+/// fund the corresponding address from bitcoind.
+async fn fund_script(
+    bitcoind: &TestBitcoind,
+    mock: &MockEsplora,
+    spk: &bitcoin::ScriptBuf,
+    amount: Amount,
+    network: Network,
+) {
+    let addr = Address::from_script(spk, network).expect("script -> address");
+    mock.register_script(spk.clone()).await;
+    bitcoind.fund(&addr, amount).await;
+}
+
+/// Run `mdk-recovery sweep --broadcast` with the destination set to
+/// a fresh bitcoind address. Returns that address so the caller can
+/// assert against its post-sweep balance.
+async fn sweep_to_fresh_address(
+    bitcoind: &TestBitcoind,
+    mock_url: &str,
+    mnemonic: &str,
+    network: Network,
+) -> Address {
     let dest_raw = bitcoind.rpc.call("getnewaddress", json!([])).await;
-    let dest_str = dest_raw.as_str().expect("getnewaddress -> string");
-    let dest: Address<NetworkUnchecked> = dest_str.parse().expect("parse dest");
+    let dest: Address<NetworkUnchecked> = dest_raw
+        .as_str()
+        .expect("getnewaddress -> string")
+        .parse()
+        .expect("parse dest");
     let dest = dest.require_network(network).expect("network match");
 
     let mnemonic_file = tempfile::NamedTempFile::new().expect("tempfile");
-    std::fs::write(mnemonic_file.path(), TEST_MNEMONIC).expect("write mnemonic");
+    std::fs::write(mnemonic_file.path(), mnemonic).expect("write mnemonic");
 
-    let url = mock.url();
+    let url = mock_url.to_string();
     let dest_str = dest.to_string();
     let mnemonic_path = mnemonic_file.path().to_path_buf();
     tokio::task::spawn_blocking(move || {
@@ -72,8 +129,12 @@ async fn bip84_funds_are_swept() {
     .await
     .expect("recovery subprocess panicked");
 
-    bitcoind.mine(1).await;
+    dest
+}
 
+/// Assert the destination received between zero and `funded` —
+/// strictly less than `funded` so the fee must have been paid.
+async fn assert_dest_received(bitcoind: &TestBitcoind, dest: &Address, funded: Amount) {
     let landed = bitcoind.balance_at(&dest.script_pubkey()).await;
     assert!(
         landed > Amount::ZERO,
