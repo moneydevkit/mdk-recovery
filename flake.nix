@@ -9,6 +9,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     crane.url = "github:ipetkov/crane";
+    # Pinned for bitcoind 29.0 to match `corepc-node`'s `29_0` feature.
+    # Bump in lockstep with the corepc-node feature flag in Cargo.toml.
+    nixpkgs-unstable.url = "github:nixos/nixpkgs/e6f23dc08d3624daab7094b701aa3954923c6bbb";
   };
 
   outputs =
@@ -17,12 +20,14 @@
       flake-utils,
       fenix,
       crane,
+      nixpkgs-unstable,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
         fenixPkgs = fenix.packages.${system};
 
         toolchain = fenixPkgs.stable.withComponents [
@@ -40,6 +45,9 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
+          # Pin the bitcoind binary `corepc-node` will spawn so the
+          # nix sandbox doesn't try to pull one down at test time.
+          BITCOIND_EXE = "${pkgsUnstable.bitcoind}/bin/bitcoind";
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -76,6 +84,7 @@
         devShells.default = pkgs.mkShell {
           packages = [
             toolchain
+            pkgsUnstable.bitcoind
           ]
           ++ (with pkgs; [
             cargo-nextest
@@ -84,6 +93,7 @@
           ]);
 
           env = {
+            BITCOIND_EXE = "${pkgsUnstable.bitcoind}/bin/bitcoind";
             NIX_SYSTEM = system;
           };
 
