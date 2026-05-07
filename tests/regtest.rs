@@ -70,6 +70,51 @@ async fn static_payment_p2wpkh_funds_are_swept() {
     assert_dest_received(&bitcoind, &dest, Amount::from_sat(1_000_000)).await;
 }
 
+/// Mixed sweep: fund a BIP-84 receive, a static_remote_key P2WPKH,
+/// and a static_remote_key P2WSH-anchor in the same wallet, run a
+/// single `sweep --broadcast`, and assert the combined value lands
+/// at the destination. Exercises the full set of input shapes the
+/// signer supports in one transaction.
+#[tokio::test]
+async fn mixed_inputs_are_swept_in_one_tx() {
+    let network = Network::Regtest;
+    let bitcoind = TestBitcoind::new().await;
+    let mock = MockEsplora::start(bitcoind.rpc.clone()).await;
+
+    let mnemonic = Mnemonic::parse(TEST_MNEMONIC).expect("parse mnemonic");
+    let derived = mdk_recovery::scan::derive_all(&mnemonic, network);
+
+    let bip84_spk = derived
+        .bip84
+        .first()
+        .expect("at least one BIP-84 entry")
+        .script_pubkey
+        .clone();
+    let static_p2wpkh_spk = derived
+        .static_entries
+        .first()
+        .expect("at least one static_payment entry")
+        .p2wpkh_spk
+        .clone();
+    let anchor_spk = derived
+        .static_entries
+        .first()
+        .expect("at least one static_payment entry")
+        .anchor_p2wsh_spk
+        .clone();
+
+    let funded = Amount::from_sat(1_000_000);
+    fund_script(&bitcoind, &mock, &bip84_spk, funded, network).await;
+    fund_script(&bitcoind, &mock, &static_p2wpkh_spk, funded, network).await;
+    fund_script(&bitcoind, &mock, &anchor_spk, funded, network).await;
+
+    let dest = sweep_to_fresh_address(&bitcoind, &mock.url(), TEST_MNEMONIC, network).await;
+    bitcoind.mine(1).await;
+
+    let total = funded * 3;
+    assert_dest_received(&bitcoind, &dest, total).await;
+}
+
 /// Register `spk` with the mock esplora so the scan finds it, then
 /// fund the corresponding address from bitcoind.
 async fn fund_script(

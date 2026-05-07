@@ -170,6 +170,11 @@ struct MockState {
     /// the test before it expects the recovery binary to query that
     /// script. Anything not in the map returns an empty UTXO set.
     scripts: Mutex<HashMap<String, ScriptBuf>>,
+    /// `scantxoutset` holds a process-wide bitcoind lock; concurrent
+    /// callers see `Scan already in progress`. Serialise the calls
+    /// from this mock so the recovery binary's `buffer_unordered`
+    /// fetcher can fan out without the test failing on contention.
+    scan_lock: Mutex<()>,
 }
 
 #[derive(Serialize)]
@@ -196,6 +201,7 @@ impl MockEsplora {
         let state = Arc::new(MockState {
             rpc,
             scripts: Mutex::new(HashMap::new()),
+            scan_lock: Mutex::new(()),
         });
 
         let app = Router::new()
@@ -243,10 +249,13 @@ async fn handle_utxo(
     drop(scripts);
 
     let desc = format!("raw({})", spk.as_bytes().to_lower_hex_string());
-    let result = state
-        .rpc
-        .call("scantxoutset", json!(["start", [{ "desc": desc }]]))
-        .await;
+    let result = {
+        let _guard = state.scan_lock.lock().await;
+        state
+            .rpc
+            .call("scantxoutset", json!(["start", [{ "desc": desc }]]))
+            .await
+    };
 
     let mut out = Vec::new();
     for entry in result["unspents"].as_array().unwrap_or(&Vec::new()) {
