@@ -27,9 +27,15 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        inherit (pkgs) lib;
+        isLinux = pkgs.stdenv.isLinux;
+
         pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
         fenixPkgs = fenix.packages.${system};
 
+        # Native toolchain — used by `just check`, the dev shell, and
+        # the macOS release builds (darwin runners build their own
+        # arch natively, no cross-compilation).
         toolchain = fenixPkgs.stable.withComponents [
           "cargo"
           "clippy"
@@ -51,15 +57,90 @@
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-      in
-      {
-        packages.default = craneLib.buildPackage (
+
+        nativeBin = craneLib.buildPackage (
           commonArgs
           // {
             inherit cargoArtifacts;
             doCheck = false;
           }
         );
+
+        # Linux release builds statically link against musl so a
+        # single binary runs on any glibc (or no libc). Darwin
+        # builds run on darwin runners and use the default dynamic
+        # linkage — every macOS host has the system libs already.
+        muslTarget =
+          {
+            x86_64-linux = "x86_64-unknown-linux-musl";
+            aarch64-linux = "aarch64-unknown-linux-musl";
+          }
+          .${system} or null;
+
+        muslCrossPkgs =
+          {
+            x86_64-linux = pkgs.pkgsCross.musl64;
+            aarch64-linux = pkgs.pkgsCross.aarch64-multiplatform-musl;
+          }
+          .${system} or null;
+
+        muslToolchain = lib.optionals isLinux [
+          fenixPkgs.targets.${muslTarget}.stable.rust-std
+        ];
+
+        staticToolchain = fenixPkgs.combine (
+          [
+            (fenixPkgs.stable.withComponents [
+              "cargo"
+              "rustc"
+            ])
+          ]
+          ++ muslToolchain
+        );
+
+        staticCraneLib = (crane.mkLib pkgs).overrideToolchain staticToolchain;
+
+        muslTargetUnderscored = builtins.replaceStrings [ "-" ] [ "_" ] (
+          if muslTarget != null then muslTarget else ""
+        );
+        muslTargetUpperUnderscored = lib.toUpper muslTargetUnderscored;
+
+        staticArgs = lib.optionalAttrs isLinux (
+          commonArgs
+          // {
+            CARGO_BUILD_TARGET = muslTarget;
+            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+            "CC_${muslTargetUnderscored}" = "${muslCrossPkgs.stdenv.cc}/bin/${muslCrossPkgs.stdenv.cc.targetPrefix}cc";
+            "CARGO_TARGET_${muslTargetUpperUnderscored}_LINKER" = "${muslCrossPkgs.stdenv.cc}/bin/${muslCrossPkgs.stdenv.cc.targetPrefix}cc";
+            nativeBuildInputs = [ muslCrossPkgs.stdenv.cc ];
+          }
+        );
+
+        staticCargoArtifacts = lib.optionalAttrs isLinux (staticCraneLib.buildDepsOnly staticArgs);
+
+        staticBin = lib.optionalAttrs isLinux (
+          staticCraneLib.buildPackage (
+            staticArgs
+            // {
+              cargoArtifacts = staticCargoArtifacts;
+              doCheck = false;
+            }
+          )
+        );
+      in
+      {
+        packages = {
+          default = nativeBin;
+
+          # Uniform target for the release workflow: a static musl
+          # binary on linux, a native dynamic binary on darwin. The
+          # workflow runs `nix build .#release` on every runner and
+          # always finds the right thing in `result/bin/mdk-recovery`.
+          release = if isLinux then staticBin else nativeBin;
+        }
+        // lib.optionalAttrs isLinux {
+          static = staticBin;
+        };
 
         checks = {
           clippy = craneLib.cargoClippy (

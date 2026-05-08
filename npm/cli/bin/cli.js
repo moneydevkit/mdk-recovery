@@ -13,7 +13,10 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
-const PLATFORM_PACKAGES = {
+// One package per supported platform. The binary inside each
+// subpackage is named after its triple so a single SHA256SUMS
+// manifest can disambiguate every entry by basename.
+const PLATFORMS = {
   'darwin-arm64': '@moneydevkit/recovery-darwin-arm64',
   'darwin-x64': '@moneydevkit/recovery-darwin-x64',
   'linux-arm64': '@moneydevkit/recovery-linux-arm64',
@@ -28,15 +31,15 @@ function platformKey() {
 
 function resolveBinary() {
   const key = platformKey();
-  const pkg = PLATFORM_PACKAGES[key];
+  const pkg = PLATFORMS[key];
   if (!pkg) {
     throw new Error(
-      `unsupported platform ${key}; supported: ${Object.keys(PLATFORM_PACKAGES).join(', ')}`,
+      `unsupported platform ${key}; supported: ${Object.keys(PLATFORMS).join(', ')}`,
     );
   }
-  const exe = process.platform === 'win32' ? 'mdk-recovery.exe' : 'mdk-recovery';
+  const ext = process.platform === 'win32' ? '.exe' : '';
   try {
-    return require.resolve(`${pkg}/bin/${exe}`);
+    return require.resolve(`${pkg}/bin/mdk-recovery-${key}${ext}`);
   } catch (e) {
     throw new Error(
       `platform package ${pkg} not installed; check that npm did not skip optional dependencies`,
