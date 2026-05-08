@@ -1,0 +1,28 @@
+{
+  "name": "@moneydevkit/recovery",
+  "version": "0.1.0",
+  "description": "Seed-only sweep tool for MoneyDevKit LDK clients",
+  "homepage": "https://github.com/moneydevkit/mdk-recovery",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moneydevkit/mdk-recovery.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "mdk-recovery": "bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "manifest/"
+  ],
+  "optionalDependencies": {
+    "@moneydevkit/recovery-darwin-arm64": "0.1.0",
+    "@moneydevkit/recovery-darwin-x64": "0.1.0",
+    "@moneydevkit/recovery-linux-arm64": "0.1.0",
+    "@moneydevkit/recovery-linux-x64": "0.1.0",
+    "@moneydevkit/recovery-win32-x64": "0.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

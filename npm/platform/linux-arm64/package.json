@@ -1,0 +1,12 @@
+{
+  "name": "@moneydevkit/recovery-linux-arm64",
+  "version": "0.1.0",
+  "description": "Linux arm64 binary for @moneydevkit/recovery",
+  "license": "MIT",
+  "files": ["bin/"],
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "engines": {
+    "node": ">=20"
+  }
+}

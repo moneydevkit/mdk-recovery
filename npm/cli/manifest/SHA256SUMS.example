@@ -1,0 +1,10 @@
+# Example shape only. The release workflow generates the real
+# `SHA256SUMS` (and accompanying `SHA256SUMS.minisig`) by hashing
+# every published platform binary, signing the manifest with the
+# release minisign key, and writing both files into this directory
+# before `npm publish`.
+#
+# Format: `<sha256 hex>  <basename>` per binary, two spaces between.
+
+deadbeef0000000000000000000000000000000000000000000000000000000  mdk-recovery
+deadbeef0000000000000000000000000000000000000000000000000000000  mdk-recovery.exe

@@ -1,0 +1,12 @@
+{
+  "name": "@moneydevkit/recovery-darwin-x64",
+  "version": "0.1.0",
+  "description": "macOS x64 binary for @moneydevkit/recovery",
+  "license": "MIT",
+  "files": ["bin/"],
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "engines": {
+    "node": ">=20"
+  }
+}
