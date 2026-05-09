@@ -17,7 +17,7 @@ use esplora_client::AsyncClient;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{RecoveryError, Result};
+use crate::error::{RecoveryError, Result, fmt_error_chain};
 
 /// One unspent output as returned by esplora's
 /// `/scripthash/{hash}/utxo` endpoint.
@@ -79,7 +79,7 @@ pub async fn broadcast(client: &AsyncClient, tx: &Transaction) -> Result<()> {
     client
         .broadcast(tx)
         .await
-        .map_err(|e| RecoveryError::Esplora(e.to_string()))
+        .map_err(|e| RecoveryError::Esplora(fmt_error_chain(&e)))
 }
 
 async fn scripthash_utxos(client: &AsyncClient, spk: &ScriptBuf) -> Result<Vec<Utxo>> {
@@ -90,7 +90,7 @@ async fn scripthash_utxos(client: &AsyncClient, spk: &ScriptBuf) -> Result<Vec<U
         .get(&url)
         .send()
         .await
-        .map_err(|e| RecoveryError::Esplora(e.to_string()))?;
+        .map_err(|e| RecoveryError::Esplora(fmt_error_chain(&e)))?;
     if !response.status().is_success() {
         return Err(RecoveryError::Esplora(format!(
             "esplora returned status {} for {url}",
@@ -100,7 +100,7 @@ async fn scripthash_utxos(client: &AsyncClient, spk: &ScriptBuf) -> Result<Vec<U
     response
         .json::<Vec<Utxo>>()
         .await
-        .map_err(|e| RecoveryError::Esplora(e.to_string()))
+        .map_err(|e| RecoveryError::Esplora(fmt_error_chain(&e)))
 }
 
 #[cfg(test)]

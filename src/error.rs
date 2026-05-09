@@ -1,6 +1,24 @@
 //! Error type for `mdk-recovery`.
 
+use std::error::Error;
+use std::fmt::Write;
+
 use bitcoin::{Amount, Network};
+
+/// Render `err` and every `source()` in its chain joined by `": "`.
+/// Used at the boundary where opaque backend errors (reqwest, esplora-
+/// client) are flattened into [`RecoveryError::Esplora`] so a 429
+/// surfaces as `"connection closed: connection reset by peer"` rather
+/// than `"error sending request for url (…)"`.
+pub fn fmt_error_chain(err: &dyn Error) -> String {
+    let mut out = err.to_string();
+    let mut cur = err.source();
+    while let Some(src) = cur {
+        write!(out, ": {src}").expect("writing to String never fails");
+        cur = src.source();
+    }
+    out
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryError {
@@ -47,3 +65,58 @@ pub enum RecoveryError {
 }
 
 pub type Result<T> = std::result::Result<T, RecoveryError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct Layer {
+        msg: &'static str,
+        source: Option<Box<dyn Error>>,
+    }
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.msg)
+        }
+    }
+
+    impl Error for Layer {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.source.as_deref()
+        }
+    }
+
+    /// The chain walker must surface every nested cause; the whole
+    /// point of the helper is that 429s and connect-resets stop being
+    /// hidden behind reqwest's outer "error sending request" wrapper.
+    #[test]
+    fn fmt_error_chain_joins_every_source() {
+        let inner = Layer {
+            msg: "connection reset",
+            source: None,
+        };
+        let middle = Layer {
+            msg: "transport error",
+            source: Some(Box::new(inner)),
+        };
+        let outer = Layer {
+            msg: "esplora call failed",
+            source: Some(Box::new(middle)),
+        };
+        assert_eq!(
+            fmt_error_chain(&outer),
+            "esplora call failed: transport error: connection reset"
+        );
+    }
+
+    #[test]
+    fn fmt_error_chain_handles_singleton() {
+        let solo = Layer {
+            msg: "solo",
+            source: None,
+        };
+        assert_eq!(fmt_error_chain(&solo), "solo");
+    }
+}

@@ -3,6 +3,7 @@ use bitcoin::address::NetworkUnchecked;
 use clap::{Args, Parser, Subcommand};
 use esplora_client::{AsyncClient, Builder};
 use mdk_recovery::cli::{OutputFormat, confirm_destination, endpoint_for, read_mnemonic};
+use mdk_recovery::error::fmt_error_chain;
 use mdk_recovery::plan::DEFAULT_FEERATE_SAT_VB;
 use mdk_recovery::scan::esplora::broadcast;
 use mdk_recovery::sign::SignedSweep;
@@ -187,7 +188,7 @@ fn build_client(network: bitcoin::Network) -> Result<AsyncClient> {
     let url = endpoint_for(network)?;
     Builder::new(&url)
         .build_async()
-        .map_err(|e| RecoveryError::Esplora(e.to_string()))
+        .map_err(|e| RecoveryError::Esplora(fmt_error_chain(&e)))
 }
 
 /// Print `report` in the requested format. JSON goes through serde
