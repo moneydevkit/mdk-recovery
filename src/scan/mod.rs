@@ -7,6 +7,8 @@
 //! them, build the report. Each step is independently testable.
 
 pub mod esplora;
+mod retry;
+mod throttle;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -21,7 +23,7 @@ use crate::derive::bip84::{Bip84Chain, Bip84Entry, DEFAULT_GAP_LIMIT, bip84_entr
 use crate::derive::static_payment::{StaticPaymentEntry, static_payment_entries};
 use crate::error::Result;
 use crate::plan::{RecoveryInput, RecoveryPlan};
-use crate::scan::esplora::{Utxo, fetch_utxos};
+use crate::scan::esplora::{ESPLORA_BURST, ESPLORA_RATE_PER_SEC, RateLimiter, Utxo, fetch_utxos};
 use crate::seed::ldk_seed_and_master;
 
 /// One static_payment derivation that had at least one UTXO. The
@@ -99,8 +101,26 @@ pub async fn run(
     max_concurrency: usize,
 ) -> Result<ScanReport> {
     let derived = derive_all(mnemonic, network);
-    let utxos = fetch_utxos(client, &derived.scripts(), max_concurrency).await?;
+    let limiter = throttle_for(network);
+    let utxos = fetch_utxos(
+        client,
+        &derived.scripts(),
+        max_concurrency,
+        limiter.as_ref(),
+    )
+    .await?;
     Ok(build_scan_report(derived, utxos))
+}
+
+/// Pick a rate limiter for `network`. The public blockstream esplora
+/// endpoint enforces 5 r/s with `burst=10` per IP; regtest hits a
+/// local server with no such cap, so the test harness wouldn't
+/// finish in any reasonable time if we throttled it.
+fn throttle_for(network: Network) -> Option<RateLimiter> {
+    match network {
+        Network::Regtest => None,
+        _ => Some(RateLimiter::new(ESPLORA_RATE_PER_SEC, ESPLORA_BURST)),
+    }
 }
 
 /// Pure re-keying step: take the flat `(spk, utxos)` list returned by

@@ -13,6 +13,7 @@ esplora-client = { version = "0.12", default-features = false, features = [
 ] }
 futures = "0.3"
 lightning = { version = "0.2", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 subtle = "2"
@@ -23,6 +24,5 @@ tokio = { version = "1", features = ["macros", "rt"] }
 assert_cmd = "2"
 axum = "0.7"
 corepc-node = { version = "0.10", features = ["29_0"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }

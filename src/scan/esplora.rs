@@ -1,15 +1,17 @@
 //! Esplora-backed UTXO scan and transaction broadcast.
 //!
 //! The pure orchestration ([`fetch_utxos_with`]) is split from the
-//! HTTP plumbing ([`scripthash_utxos`], [`broadcast`]). Tests target
-//! the orchestration with closures and the response schema with a
-//! JSON fixture; the wire layer is trusted reqwest + serde.
+//! HTTP plumbing ([`scripthash_utxos`], [`broadcast`]). Transient
+//! failures (429, 5xx, connection blips) are absorbed by the
+//! [`with_retry`] wrapper in [`crate::scan::retry`], which classifies
+//! the HTTP response and loops with exponential backoff.
 //!
 //! `esplora-client = 0.12` does not expose a `/utxo` helper, so we
 //! piggy-back on its inner [`reqwest::Client`] for the GET. The
 //! broadcast path uses the upstream wrapper directly.
 
 use std::future::Future;
+use std::time::Duration;
 
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::{ScriptBuf, Transaction, Txid};
@@ -18,6 +20,28 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{RecoveryError, Result, fmt_error_chain};
+use crate::scan::retry::{RetryPolicy, with_retry};
+pub use crate::scan::throttle::RateLimiter;
+
+/// Sustained request budget against the public esplora endpoint, in
+/// requests per second. Sized at 80 % of the server's 5 r/s cap so a
+/// little client-side jitter doesn't punch through into 429 territory.
+pub const ESPLORA_RATE_PER_SEC: f64 = 4.0;
+
+/// Burst budget against the public esplora endpoint, in tokens. Below
+/// the server's `burst=10` to leave some headroom.
+pub const ESPLORA_BURST: f64 = 8.0;
+
+/// Retry budget for a single script's UTXO fetch. Five attempts
+/// with a 500 ms base doubling to 8 s gives a per-script worst case
+/// of ~15.5 s before we surface the failure — long enough to ride
+/// out a rate-limit burst or a brief upstream wobble, short enough
+/// that a wedged server doesn't hang the scan.
+const RETRY_POLICY: RetryPolicy = RetryPolicy {
+    max_attempts: 5,
+    base_delay: Duration::from_millis(500),
+    max_delay: Duration::from_secs(8),
+};
 
 /// One unspent output as returned by esplora's
 /// `/scripthash/{hash}/utxo` endpoint.
@@ -38,14 +62,17 @@ pub struct UtxoStatus {
 }
 
 /// Fetch UTXOs for every script in `scripts` against `client` in
-/// parallel. See [`fetch_utxos_with`] for the orchestration shape.
+/// parallel. When `limiter` is `Some`, each fetch acquires a token
+/// first; when `None`, fetches fire as fast as `max_concurrency`
+/// allows. See [`fetch_utxos_with`] for the orchestration shape.
 pub async fn fetch_utxos(
     client: &AsyncClient,
     scripts: &[ScriptBuf],
     max_concurrency: usize,
+    limiter: Option<&RateLimiter>,
 ) -> Result<Vec<(ScriptBuf, Vec<Utxo>)>> {
-    fetch_utxos_with(scripts, max_concurrency, |spk| async move {
-        scripthash_utxos(client, &spk).await
+    fetch_utxos_with(scripts, max_concurrency, move |spk| async move {
+        scripthash_utxos(client, &spk, limiter).await
     })
     .await
 }
@@ -82,21 +109,32 @@ pub async fn broadcast(client: &AsyncClient, tx: &Transaction) -> Result<()> {
         .map_err(|e| RecoveryError::Esplora(fmt_error_chain(&e)))
 }
 
-async fn scripthash_utxos(client: &AsyncClient, spk: &ScriptBuf) -> Result<Vec<Utxo>> {
+/// Fetch one script's UTXOs. The retry wrapper owns the request/
+/// status classification; here we only spell out the URL, acquire a
+/// limiter token per attempt, and decode the body on success. The
+/// limiter is re-acquired on every attempt so retries draw from the
+/// same per-IP budget as fresh requests — otherwise a burst of 429s
+/// would all bypass the bucket and stampede the server.
+///
+/// A body-decode error after a 2xx response surfaces as permanent.
+/// In practice this means schema drift (which would never recover
+/// anyway) or a torn body read mid-stream (rare enough that losing
+/// one script per occurrence is the right tradeoff against retrying
+/// what could be a parse miss for the entire budget).
+async fn scripthash_utxos(
+    client: &AsyncClient,
+    spk: &ScriptBuf,
+    limiter: Option<&RateLimiter>,
+) -> Result<Vec<Utxo>> {
     let scripthash = sha256::Hash::hash(spk.as_bytes());
     let url = format!("{}/scripthash/{:x}/utxo", client.url(), scripthash);
-    let response = client
-        .client()
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| RecoveryError::Esplora(fmt_error_chain(&e)))?;
-    if !response.status().is_success() {
-        return Err(RecoveryError::Esplora(format!(
-            "esplora returned status {} for {url}",
-            response.status()
-        )));
-    }
+    let response = with_retry(RETRY_POLICY, || async {
+        if let Some(l) = limiter {
+            l.acquire().await;
+        }
+        client.client().get(&url).send().await
+    })
+    .await?;
     response
         .json::<Vec<Utxo>>()
         .await
