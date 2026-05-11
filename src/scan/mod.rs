@@ -66,12 +66,19 @@ pub struct Derived {
 impl Derived {
     /// Flat list of every script_pubkey to query the backend for. The
     /// order isn't load-bearing — `build_scan_report` re-keys by
-    /// script, not by index.
-    pub fn scripts(&self) -> Vec<ScriptBuf> {
-        let mut scripts = Vec::with_capacity(self.static_entries.len() * 2 + self.bip84.len());
+    /// script, not by index. When `include_anchors` is `false`, the
+    /// 1000 P2WSH anchor scripts are skipped, roughly halving the
+    /// request count for the common case where the wallet never
+    /// opened anchor channels.
+    pub fn scripts(&self, include_anchors: bool) -> Vec<ScriptBuf> {
+        let cap =
+            self.static_entries.len() * if include_anchors { 2 } else { 1 } + self.bip84.len();
+        let mut scripts = Vec::with_capacity(cap);
         for e in &self.static_entries {
             scripts.push(e.p2wpkh_spk.clone());
-            scripts.push(e.anchor_p2wsh_spk.clone());
+            if include_anchors {
+                scripts.push(e.anchor_p2wsh_spk.clone());
+            }
         }
         for e in &self.bip84 {
             scripts.push(e.script_pubkey.clone());
@@ -93,18 +100,21 @@ pub fn derive_all(mnemonic: &Mnemonic, network: Network) -> Derived {
 
 /// Derive every script enumerable from the mnemonic, query the
 /// backend for matching UTXOs in parallel, and re-key the flat
-/// response into a [`ScanReport`].
+/// response into a [`ScanReport`]. `include_anchors` controls
+/// whether the 1000 P2WSH anchor scripts are queried; off by
+/// default in the CLI since MDK does not use anchor channels.
 pub async fn run(
     client: &AsyncClient,
     mnemonic: &Mnemonic,
     network: Network,
     max_concurrency: usize,
+    include_anchors: bool,
 ) -> Result<ScanReport> {
     let derived = derive_all(mnemonic, network);
     let limiter = throttle_for(network);
     let utxos = fetch_utxos(
         client,
-        &derived.scripts(),
+        &derived.scripts(include_anchors),
         max_concurrency,
         limiter.as_ref(),
     )
@@ -573,15 +583,16 @@ mod tests {
         assert_eq!(report.total_value(), Amount::from_sat(1_000));
     }
 
-    /// Every script flavour must appear in the request list, and the
-    /// total count must be `2 * static + bip84`. Drops here would
-    /// silently exclude a flavour from the backend query and produce
-    /// no hits at all for it.
+    /// With `include_anchors=true`, every script flavour must appear
+    /// in the request list and the total count must be
+    /// `2 * static + bip84`. Drops here would silently exclude a
+    /// flavour from the backend query and produce no hits at all for
+    /// it.
     #[test]
-    fn derived_scripts_cover_every_flavour() {
+    fn derived_scripts_cover_every_flavour_when_anchors_included() {
         let mnemonic = Mnemonic::from_str(KNOWN_MNEMONIC).unwrap();
         let derived = derive_all(&mnemonic, Network::Bitcoin);
-        let scripts = derived.scripts();
+        let scripts = derived.scripts(true);
 
         assert_eq!(
             scripts.len(),
@@ -596,6 +607,31 @@ mod tests {
             .expect("internal/3 exists for default gap_limit")
             .script_pubkey;
         assert!(scripts.contains(target_bip84));
+    }
+
+    /// With `include_anchors=false`, the anchor P2WSH scripts must be
+    /// dropped from the request list, halving the static_payment
+    /// contribution. P2WPKH and BIP-84 scripts must still appear, so
+    /// a wallet without anchor channels still has every other
+    /// recoverable script queried.
+    #[test]
+    fn derived_scripts_skip_anchors_when_excluded() {
+        let mnemonic = Mnemonic::from_str(KNOWN_MNEMONIC).unwrap();
+        let derived = derive_all(&mnemonic, Network::Bitcoin);
+        let scripts = derived.scripts(false);
+
+        assert_eq!(
+            scripts.len(),
+            derived.static_entries.len() + derived.bip84.len()
+        );
+        assert!(scripts.contains(&derived.static_entries[7].p2wpkh_spk));
+        for entry in &derived.static_entries {
+            assert!(
+                !scripts.contains(&entry.anchor_p2wsh_spk),
+                "anchor script for idx {} must be skipped",
+                entry.idx
+            );
+        }
     }
 
     /// End-to-end pure path: a `ScanReport` with one synthetic BIP-84

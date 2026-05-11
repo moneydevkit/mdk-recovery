@@ -35,6 +35,14 @@ struct ScanArgs {
     #[command(flatten)]
     common: CommonArgs,
 
+    /// Also query the 1000 static_payment P2WSH anchor scripts. Off
+    /// by default since MDK does not open anchor channels; turning
+    /// this on roughly doubles the script count and scan time. Only
+    /// useful if anchor-channel close outputs may have been paid to
+    /// this seed by another implementation.
+    #[arg(long)]
+    scan_anchors: bool,
+
     /// Emit the report as pretty-printed JSON instead of the
     /// human-readable summary.
     #[arg(long)]
@@ -69,6 +77,14 @@ struct SweepCommonArgs {
     /// the mempool is congested or the recovery is time-sensitive.
     #[arg(long, default_value_t = DEFAULT_FEERATE_SAT_VB)]
     feerate_sat_vb: u64,
+
+    /// Also query the 1000 static_payment P2WSH anchor scripts. Off
+    /// by default since MDK does not open anchor channels; turning
+    /// this on roughly doubles the script count and scan time. Only
+    /// useful if anchor-channel close outputs may have been paid to
+    /// this seed by another implementation.
+    #[arg(long)]
+    scan_anchors: bool,
 
     /// Emit the report as pretty-printed JSON instead of the
     /// human-readable summary.
@@ -141,7 +157,14 @@ fn run_derive(args: DeriveArgs) -> Result<()> {
 async fn run_scan(args: ScanArgs) -> Result<()> {
     let mnemonic = read_mnemonic(&args.common.mnemonic_file)?;
     let client = build_client(args.common.network)?;
-    let report = scan::run(&client, &mnemonic, args.common.network, SCAN_CONCURRENCY).await?;
+    let report = scan::run(
+        &client,
+        &mnemonic,
+        args.common.network,
+        SCAN_CONCURRENCY,
+        args.scan_anchors,
+    )
+    .await?;
     render(&report, OutputFormat::from_json_flag(args.json))
 }
 
@@ -167,7 +190,14 @@ async fn run_sweep(args: SweepArgs) -> Result<()> {
 async fn build_plan(args: &SweepCommonArgs) -> Result<mdk_recovery::plan::RecoveryPlan> {
     let mnemonic = read_mnemonic(&args.common.mnemonic_file)?;
     let client = build_client(args.common.network)?;
-    let report = scan::run(&client, &mnemonic, args.common.network, SCAN_CONCURRENCY).await?;
+    let report = scan::run(
+        &client,
+        &mnemonic,
+        args.common.network,
+        SCAN_CONCURRENCY,
+        args.scan_anchors,
+    )
+    .await?;
     report.into_plan(args.to.clone(), args.feerate_sat_vb)
 }
 

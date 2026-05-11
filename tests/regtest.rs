@@ -38,7 +38,7 @@ async fn bip84_funds_are_swept() {
         .clone();
     fund_script(&bitcoind, &mock, &spk, Amount::from_sat(1_000_000), network).await;
 
-    let dest = sweep_to_fresh_address(&bitcoind, &mock.url(), TEST_MNEMONIC, network).await;
+    let dest = sweep_to_fresh_address(&bitcoind, &mock.url(), TEST_MNEMONIC, network, false).await;
     bitcoind.mine(1).await;
 
     assert_dest_received(&bitcoind, &dest, Amount::from_sat(1_000_000)).await;
@@ -64,7 +64,7 @@ async fn static_payment_p2wpkh_funds_are_swept() {
         .clone();
     fund_script(&bitcoind, &mock, &spk, Amount::from_sat(1_000_000), network).await;
 
-    let dest = sweep_to_fresh_address(&bitcoind, &mock.url(), TEST_MNEMONIC, network).await;
+    let dest = sweep_to_fresh_address(&bitcoind, &mock.url(), TEST_MNEMONIC, network, false).await;
     bitcoind.mine(1).await;
 
     assert_dest_received(&bitcoind, &dest, Amount::from_sat(1_000_000)).await;
@@ -108,7 +108,9 @@ async fn mixed_inputs_are_swept_in_one_tx() {
     fund_script(&bitcoind, &mock, &static_p2wpkh_spk, funded, network).await;
     fund_script(&bitcoind, &mock, &anchor_spk, funded, network).await;
 
-    let dest = sweep_to_fresh_address(&bitcoind, &mock.url(), TEST_MNEMONIC, network).await;
+    // Anchor channels are off by default; this test funds an anchor
+    // script so the sweep must opt in.
+    let dest = sweep_to_fresh_address(&bitcoind, &mock.url(), TEST_MNEMONIC, network, true).await;
     bitcoind.mine(1).await;
 
     let total = funded * 3;
@@ -130,13 +132,15 @@ async fn fund_script(
 }
 
 /// Run `mdk-recovery sweep --broadcast` with the destination set to
-/// a fresh bitcoind address. Returns that address so the caller can
-/// assert against its post-sweep balance.
+/// a fresh bitcoind address. `scan_anchors` toggles the matching CLI
+/// flag for tests that fund anchor scripts. Returns the destination
+/// so the caller can assert against its post-sweep balance.
 async fn sweep_to_fresh_address(
     bitcoind: &TestBitcoind,
     mock_url: &str,
     mnemonic: &str,
     network: Network,
+    scan_anchors: bool,
 ) -> Address {
     let dest_raw = bitcoind.rpc.call("getnewaddress", json!([])).await;
     let dest: Address<NetworkUnchecked> = dest_raw
@@ -153,19 +157,23 @@ async fn sweep_to_fresh_address(
     let dest_str = dest.to_string();
     let mnemonic_path = mnemonic_file.path().to_path_buf();
     tokio::task::spawn_blocking(move || {
+        let mut args: Vec<&str> = vec![
+            "sweep",
+            "--mnemonic-file",
+            mnemonic_path.to_str().unwrap(),
+            "--network",
+            "regtest",
+            "--to",
+            &dest_str,
+            "--feerate-sat-vb",
+            "5",
+            "--broadcast",
+        ];
+        if scan_anchors {
+            args.push("--scan-anchors");
+        }
         recovery_command(&url)
-            .args([
-                "sweep",
-                "--mnemonic-file",
-                mnemonic_path.to_str().unwrap(),
-                "--network",
-                "regtest",
-                "--to",
-                &dest_str,
-                "--feerate-sat-vb",
-                "5",
-                "--broadcast",
-            ])
+            .args(&args)
             .write_stdin(format!("{dest_str}\n"))
             .timeout(Duration::from_secs(60))
             .assert()
