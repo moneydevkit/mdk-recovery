@@ -39,41 +39,74 @@ prior wallet state, channel monitor, or VSS access required.
 
 If the seed is gone, nothing recovers anything.
 
-## Subcommands
+## Usage
 
-All four take `--mnemonic-file <path>` (`-` reads stdin) and
-`--network {bitcoin,testnet,signet,regtest}`.
+Every flag is optional. The bare invocation `mdk-recovery` runs the
+full interactive flow against mainnet.
 
-| Subcommand | Effect |
-|---|---|
-| `derive` | Print every script the seed can claim. No I/O. |
-| `scan` | Query the esplora endpoint for matching UTXOs. Read-only. |
-| `plan` | Scan and render the signed-sweep plan. No signing, no broadcast. |
-| `sweep` | Build, sign, and (with `--broadcast`) submit the sweep transaction. |
+```
+mdk-recovery [--network bitcoin|testnet|signet|regtest]   default: bitcoin
+             [--to <address>]                             else prompted
+             [--feerate-sat-vb <n>]                       default: 5
+             [--scan-anchors]                             opt-in
+             [--mnemonic-stdin]                           force stdin read
+             [--yes]                                      skip confirmation
+             [--verbose]                                  per-input listing
+             [--json]                                     scripted broadcast
+```
 
-`sweep` and `plan` accept `--to <address>` and
-`--feerate-sat-vb <n>` (default 5). Every reporting subcommand
-supports `--json` for pretty-printed JSON suitable for `jq`. Secret
-keys are stripped from the JSON output unconditionally.
+One flat binary, no subcommands. On a TTY the run is:
 
-### Broadcast confirmation flow
+1. Prompt for the mnemonic with no echo (via `rpassword`).
+2. Scan the network's esplora for matching UTXOs.
+3. Print `Found N output(s) totalling X BTC.`
+4. Prompt `Where to? (onchain address): ` unless `--to` was given.
+5. Print the To / Fee / Net summary block.
+6. Prompt `Broadcast? [y/N] ` unless `--yes` was given.
+7. Broadcast and print the mempool URL.
 
-`sweep --broadcast` prints the destination to stderr and prompts on
-stdin to retype it. The reply is constant-time compared with the
-flag value; a mismatch aborts before broadcast. The prompt is on
-stderr so JSON output to stdout stays pipeable. The check is
-defence against a typo in `--to`, not against an adversary with
-shell access — by then the seed is already in their hands.
+`--scan-anchors` extends the scan to the 1000 P2WSH anchor scripts.
+Off by default since MDK does not open anchor channels; turning it
+on roughly doubles the scan time.
+
+`--verbose` appends a per-input listing (outpoint, source, value)
+to the summary block. This is what an auditor reaches for when
+they want to see exactly which UTXOs feed the sweep.
+
+Off a TTY, or with `--mnemonic-stdin` on a TTY, the binary reads
+the mnemonic from stdin to EOF instead of prompting. This is the
+scripted / CI path.
+
+`--json` emits one JSON object to stdout after broadcast
+(`txid`, `raw_hex`, `explorer_url`). It is strictly
+non-interactive: requires `--to`, `--yes`, and a mnemonic on stdin
+(enforced at runtime so a TTY caller can't fall into the hidden
+prompt by accident). All progress, prompts, and the human summary
+go to stderr so the JSON stays pipeable.
+
+### Confirmation
+
+The `[y/N]` after the summary block is the only gate. The
+destination renders in plain context above it; the user reads
+back what they pasted and types `y`. Anything other than `y` or
+`yes` (case insensitive) aborts cleanly with no broadcast, which
+also covers the dry-run case: an auditor who wants to inspect the
+plan without broadcasting just declines.
 
 ## Endpoints
 
-Mainnet, testnet, and signet hard-code blockstream.info. Regtest
-reads `MDK_RECOVERY_ESPLORA_URL` from the environment so test
-harnesses can point the binary at a local indexer; shipped binaries
-have no use for regtest. There is no CLI flag for arbitrary
-endpoint override — choosing one is a footgun (silently
-redirecting mainnet traffic) and the public endpoints have been
-stable for a decade.
+Per-network esplora URLs are hard-coded in `cli::endpoint_for`:
+
+| Network | Endpoint |
+|---|---|
+| Bitcoin | `https://esplora.moneydevkit.com/api` |
+| Signet | `https://mutinynet.com/api` (the MDK target signet, not vanilla) |
+| Testnet | `https://blockstream.info/testnet/api` |
+| Regtest | `$MDK_RECOVERY_ESPLORA_URL` (test harness only) |
+
+There is no CLI flag for arbitrary endpoint override — picking the
+wrong one is a footgun (silently redirecting mainnet traffic) and
+the per-network endpoints rarely move.
 
 ## Build and test
 
