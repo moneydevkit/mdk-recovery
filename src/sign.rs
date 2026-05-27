@@ -1,7 +1,7 @@
 //! Sign a `RecoveryPlan` into a broadcast-ready `Transaction`.
 //!
-//! Pure: takes a validated plan, returns a fully-witnessed
-//! single-output sweep tx. Two witness shapes are emitted:
+//! Takes a validated plan, returns a fully-witnessed single-output
+//! sweep tx. Two witness shapes are emitted:
 //!
 //! - P2WPKH (BIP-84 + non-anchor `to_remote`): `[sig, pubkey]`,
 //!   `nSequence = 0xfffffffd` so the sweep is RBF-able (BIP-125).

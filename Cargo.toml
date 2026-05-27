@@ -11,7 +11,7 @@ esplora-client = { version = "0.12", default-features = false, features = [
     "async-https-rustls",
     "tokio",
 ] }
-futures = "0.3"
+indicatif = "0.17"
 lightning = { version = "0.2", default-features = false, features = ["std"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

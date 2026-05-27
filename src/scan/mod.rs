@@ -1,10 +1,9 @@
 //! Scan a seed for recoverable UTXOs: derive → fetch → re-key.
 //!
-//! Composes the pure derivation modules (`seed`, `derive::*`) with the
-//! effectful chain backend (`scan::esplora`) and the pure plan
-//! constructor (`plan`). The shell entry point [`run`] is three
-//! lines: derive every script the seed can claim, fetch UTXOs for
-//! them, build the report. Each step is independently testable.
+//! Composes the derivation modules (`seed`, `derive::*`) with the
+//! chain backend (`scan::esplora`) and the plan constructor
+//! (`plan`). The entry point [`run`] is three lines: derive scripts,
+//! fetch UTXOs, build the report.
 
 pub mod esplora;
 mod retry;
@@ -23,12 +22,10 @@ use crate::derive::bip84::{Bip84Chain, Bip84Entry, DEFAULT_GAP_LIMIT, bip84_entr
 use crate::derive::static_payment::{StaticPaymentEntry, static_payment_entries};
 use crate::error::Result;
 use crate::plan::{RecoveryInput, RecoveryPlan};
-use crate::scan::esplora::{ESPLORA_BURST, ESPLORA_RATE_PER_SEC, RateLimiter, Utxo, fetch_utxos};
+use crate::scan::esplora::{ESPLORA_RATE_PER_SEC, Throttle, Utxo, fetch_utxos};
 use crate::seed::ldk_seed_and_master;
 
-/// One static_payment derivation that had at least one UTXO. The
-/// `entry` carries the keys; `utxos` is whichever non-empty list came
-/// back for the script flavour this hit represents.
+/// One static_payment derivation that had at least one UTXO.
 #[derive(Debug, Clone, Serialize)]
 pub struct StaticPaymentHit {
     pub entry: StaticPaymentEntry,
@@ -42,9 +39,8 @@ pub struct Bip84Hit {
     pub utxos: Vec<Utxo>,
 }
 
-/// Outcome of a scan: every derivation that produced UTXOs, grouped
-/// by source. Empty buckets stay empty rather than carrying "no hits"
-/// sentinels — every entry in every vec is a real hit.
+/// Every derivation that produced UTXOs, grouped by source. Empty
+/// vecs stay empty — every entry is a real hit.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanReport {
     pub network: Network,
@@ -53,9 +49,9 @@ pub struct ScanReport {
     pub bip84: Vec<Bip84Hit>,
 }
 
-/// Every script the seed can claim, paired with the entries the
-/// re-keying step needs to bind each script back to its keys. Doubles
-/// as the output of the offline `derive` subcommand.
+/// Every script the seed can claim, paired with the entries that
+/// bind each script back to its keys. Output of the offline
+/// `derive` subcommand.
 #[derive(Debug, Clone, Serialize)]
 pub struct Derived {
     pub network: Network,
@@ -64,12 +60,11 @@ pub struct Derived {
 }
 
 impl Derived {
-    /// Flat list of every script_pubkey to query the backend for. The
-    /// order isn't load-bearing — `build_scan_report` re-keys by
-    /// script, not by index. When `include_anchors` is `false`, the
-    /// 1000 P2WSH anchor scripts are skipped, roughly halving the
-    /// request count for the common case where the wallet never
-    /// opened anchor channels.
+    /// Flat list of every script_pubkey to query. Order doesn't
+    /// matter — `build_scan_report` re-keys by script. When
+    /// `include_anchors` is `false`, the 1000 P2WSH anchor scripts
+    /// are skipped (roughly halves the request count for wallets
+    /// without anchor channels).
     pub fn scripts(&self, include_anchors: bool) -> Vec<ScriptBuf> {
         let cap =
             self.static_entries.len() * if include_anchors { 2 } else { 1 } + self.bip84.len();
@@ -87,8 +82,8 @@ impl Derived {
     }
 }
 
-/// Derive every script enumerable from the mnemonic (1000
-/// static_payment × 2 flavours + 2×`gap_limit` BIP-84). Pure.
+/// Derive every script enumerable from the mnemonic: 1000
+/// static_payment × 2 flavours + 2×`gap_limit` BIP-84.
 pub fn derive_all(mnemonic: &Mnemonic, network: Network) -> Derived {
     let (ldk_seed, master) = ldk_seed_and_master(mnemonic, network);
     Derived {
@@ -98,43 +93,32 @@ pub fn derive_all(mnemonic: &Mnemonic, network: Network) -> Derived {
     }
 }
 
-/// Derive every script enumerable from the mnemonic, query the
-/// backend for matching UTXOs in parallel, and re-key the flat
-/// response into a [`ScanReport`]. `include_anchors` controls
-/// whether the 1000 P2WSH anchor scripts are queried; off by
-/// default in the CLI since MDK does not use anchor channels.
+/// Derive scripts, fetch UTXOs, and re-key the response into a
+/// [`ScanReport`]. `include_anchors` controls whether the 1000
+/// P2WSH anchor scripts are queried; off by default since MDK does
+/// not use anchor channels.
 pub async fn run(
     client: &AsyncClient,
     mnemonic: &Mnemonic,
     network: Network,
-    max_concurrency: usize,
     include_anchors: bool,
 ) -> Result<ScanReport> {
     let derived = derive_all(mnemonic, network);
-    let limiter = throttle_for(network);
-    let utxos = fetch_utxos(
-        client,
-        &derived.scripts(include_anchors),
-        max_concurrency,
-        limiter.as_ref(),
-    )
-    .await?;
+    let throttle = throttle_for(network);
+    let utxos = fetch_utxos(client, &derived.scripts(include_anchors), &throttle).await?;
     Ok(build_scan_report(derived, utxos))
 }
 
-/// Pick a rate limiter for `network`. The public blockstream esplora
-/// endpoint enforces 5 r/s with `burst=10` per IP; regtest hits a
-/// local server with no such cap, so the test harness wouldn't
-/// finish in any reasonable time if we throttled it.
-fn throttle_for(network: Network) -> Option<RateLimiter> {
+/// Pick a throttle for `network`. Regtest hits a local server with
+/// no cap, so we run unthrottled there to keep the test harness fast.
+fn throttle_for(network: Network) -> Throttle {
     match network {
-        Network::Regtest => None,
-        _ => Some(RateLimiter::new(ESPLORA_RATE_PER_SEC, ESPLORA_BURST)),
+        Network::Regtest => Throttle::unlimited(),
+        _ => Throttle::new(ESPLORA_RATE_PER_SEC),
     }
 }
 
-/// Pure re-keying step: take the flat `(spk, utxos)` list returned by
-/// the backend and route each non-empty hit back to its derivation
+/// Route each non-empty `(spk, utxos)` pair back to its derivation
 /// entry. Empty UTXO lists are dropped.
 fn build_scan_report(derived: Derived, utxos: Vec<(ScriptBuf, Vec<Utxo>)>) -> ScanReport {
     let mut by_spk: HashMap<ScriptBuf, Vec<Utxo>> =
@@ -176,10 +160,9 @@ fn build_scan_report(derived: Derived, utxos: Vec<(ScriptBuf, Vec<Utxo>)>) -> Sc
 }
 
 impl ScanReport {
-    /// Total swept value across every hit. Saturates on overflow,
-    /// which would require a >21M-BTC discovery — not a real failure
-    /// mode, but the saturating arithmetic keeps the function total
-    /// and callers don't need a `Result`.
+    /// Total swept value across every hit. Saturates on overflow —
+    /// would require a >21M-BTC discovery, but keeps the function
+    /// total so callers don't need a `Result`.
     pub fn total_value(&self) -> Amount {
         let sum_utxos = |utxos: &[Utxo]| -> u64 { utxos.iter().map(|u| u.value).sum() };
         let static_p2wpkh: u64 = self
@@ -200,9 +183,8 @@ impl ScanReport {
         )
     }
 
-    /// Translate every UTXO into the matching `RecoveryInput` variant.
-    /// One `RecoveryInput` per UTXO (not per derivation entry); the
-    /// signer wants flat inputs, not nested groups.
+    /// One `RecoveryInput` per UTXO. The signer wants flat inputs,
+    /// not nested groups.
     pub fn into_recovery_inputs(self) -> Vec<RecoveryInput> {
         let mut out = Vec::new();
 
@@ -248,8 +230,7 @@ impl ScanReport {
         out
     }
 
-    /// Build a validated [`RecoveryPlan`] from this report. Consumes
-    /// `self` since a plan already carries every input.
+    /// Build a validated [`RecoveryPlan`] from this report.
     pub fn into_plan(
         self,
         destination: Address<NetworkUnchecked>,
@@ -402,9 +383,8 @@ mod tests {
         }
     }
 
-    /// Each hit must be paired with the UTXOs returned for *its own*
-    /// script. The risk is silently swapping `(entry_a, utxos_b)` —
-    /// neither the hashmap nor the conversion would fire on that.
+    /// Each hit must be paired with its own script's UTXOs. Guards
+    /// against silently swapping `(entry_a, utxos_b)`.
     #[test]
     fn build_scan_report_pairs_each_hit_with_its_utxos() {
         let static_entries = static_payment_entries(&LDK_SEED);
@@ -445,9 +425,8 @@ mod tests {
         assert_eq!(report.bip84[0].utxos, vec![utxo_bip84]);
     }
 
-    /// A 1000+1000+40 script scan returns >2000 `(spk, [])` pairs and
-    /// only a handful of non-empty ones. The empty ones must not
-    /// surface as hits.
+    /// Most scans return >2000 empty `(spk, [])` pairs and a
+    /// handful of hits. Empties must not surface as hits.
     #[test]
     fn build_scan_report_drops_empty_results() {
         let static_entries = static_payment_entries(&LDK_SEED);
@@ -486,10 +465,9 @@ mod tests {
         assert!(report.bip84.is_empty());
     }
 
-    /// Every UTXO across every hit must produce exactly one
-    /// `RecoveryInput`, with the variant matching the hit's source.
-    /// The anchor variant must additionally carry a redeem script
-    /// that hashes to its `script_pubkey`.
+    /// Every UTXO produces one `RecoveryInput`, variant matching
+    /// the hit's source. The anchor variant's redeem script must
+    /// hash to its `script_pubkey`.
     #[test]
     fn into_recovery_inputs_round_trips_every_utxo() {
         use bitcoin::WScriptHash;
@@ -583,11 +561,9 @@ mod tests {
         assert_eq!(report.total_value(), Amount::from_sat(1_000));
     }
 
-    /// With `include_anchors=true`, every script flavour must appear
-    /// in the request list and the total count must be
-    /// `2 * static + bip84`. Drops here would silently exclude a
-    /// flavour from the backend query and produce no hits at all for
-    /// it.
+    /// `include_anchors=true` must yield `2 * static + bip84`
+    /// scripts. A drop here would silently exclude a flavour from
+    /// the query.
     #[test]
     fn derived_scripts_cover_every_flavour_when_anchors_included() {
         let mnemonic = Mnemonic::from_str(KNOWN_MNEMONIC).unwrap();
@@ -609,11 +585,8 @@ mod tests {
         assert!(scripts.contains(target_bip84));
     }
 
-    /// With `include_anchors=false`, the anchor P2WSH scripts must be
-    /// dropped from the request list, halving the static_payment
-    /// contribution. P2WPKH and BIP-84 scripts must still appear, so
-    /// a wallet without anchor channels still has every other
-    /// recoverable script queried.
+    /// `include_anchors=false` must drop every anchor P2WSH script
+    /// while keeping P2WPKH and BIP-84.
     #[test]
     fn derived_scripts_skip_anchors_when_excluded() {
         let mnemonic = Mnemonic::from_str(KNOWN_MNEMONIC).unwrap();
@@ -634,9 +607,9 @@ mod tests {
         }
     }
 
-    /// End-to-end pure path: a `ScanReport` with one synthetic BIP-84
-    /// hit must build a valid `RecoveryPlan` whose single input is the
-    /// matching `RecoveryInput::Bip84`.
+    /// End-to-end: a `ScanReport` with one BIP-84 hit must build a
+    /// valid `RecoveryPlan` whose single input is the matching
+    /// `RecoveryInput::Bip84`.
     #[test]
     fn into_plan_produces_valid_recovery_plan() {
         let mnemonic = Mnemonic::from_str(KNOWN_MNEMONIC).unwrap();

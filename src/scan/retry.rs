@@ -1,20 +1,9 @@
 //! HTTP-aware retry wrapper for esplora GETs.
 //!
-//! The wrapper takes a closure that fires a single HTTP request and
-//! drives it under a [`RetryPolicy`]. Classification lives inside the
-//! loop: connection errors and 429/5xx responses count as transient
-//! and trigger exponential backoff; other 4xx responses short-circuit
-//! as permanent. Body decoding is the caller's job — once the
-//! response is in hand, the retry budget is gone.
-//!
-//! The status classification is a pure [`classify_status`] function
-//! tested independently from the I/O. The loop itself is a thin
-//! match-and-sleep over it.
-//!
-//! The wrapper assumes every error category maps onto
-//! [`RecoveryError::Esplora`]. When a future caller wants a different
-//! error variant, we can take a constructor closure; until then,
-//! parameterising for one hypothetical use is just noise.
+//! Runs a request closure under a [`RetryPolicy`]. Connection errors
+//! and 429/5xx count as transient and trigger exponential backoff;
+//! other 4xx short-circuit as permanent. Body decoding is the
+//! caller's job. Rate-limiting belongs in the closure itself.
 
 use std::future::Future;
 use std::time::Duration;
@@ -24,9 +13,9 @@ use tokio::time::sleep;
 
 use crate::error::{RecoveryError, Result, fmt_error_chain};
 
-/// Knobs for the exponential-backoff retry loop. `max_attempts`
-/// counts the initial try plus retries; `base_delay` is the wait
-/// before the first retry; `max_delay` caps the doubling.
+/// Exponential-backoff knobs. `max_attempts` counts the initial try
+/// plus retries; `base_delay` precedes the first retry; `max_delay`
+/// caps the doubling.
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     pub max_attempts: u32,
@@ -34,12 +23,9 @@ pub struct RetryPolicy {
     pub max_delay: Duration,
 }
 
-/// Run `op` under `policy`. The closure fires one HTTP request per
-/// attempt; the wrapper classifies the outcome, retries transient
-/// failures with exponential backoff, and surfaces permanent
-/// failures (or an exhausted budget) as [`RecoveryError::Esplora`].
-/// On success the raw `reqwest::Response` is returned so the caller
-/// can decode its body.
+/// Run `op` under `policy`. On transient outcomes (429/5xx or local
+/// blips) sleep the backoff and retry; on permanent outcomes
+/// short-circuit.
 pub async fn with_retry<F, Fut>(policy: RetryPolicy, op: F) -> Result<Response>
 where
     F: Fn() -> Fut,
@@ -49,26 +35,27 @@ where
         match classify(op().await) {
             Outcome::Done(r) => return Ok(r),
             Outcome::Permanent(msg) => return Err(RecoveryError::Esplora(msg)),
-            Outcome::Transient(msg) => match backoff_for(attempt, policy) {
-                Some(delay) => sleep(delay).await,
-                None => return Err(RecoveryError::Esplora(msg)),
-            },
+            Outcome::Transient(msg) => {
+                let Some(delay) = backoff_for(attempt, policy) else {
+                    return Err(RecoveryError::Esplora(msg));
+                };
+                sleep(delay).await;
+            }
         }
     }
     unreachable!("loop exits via early return on every branch")
 }
 
-/// What to do with one attempt's outcome.
+/// One attempt's outcome.
 enum Outcome {
     Done(Response),
     Transient(String),
     Permanent(String),
 }
 
-/// How a single HTTP status code is treated. Used as the bridge
-/// between the pure classifier and the response-consuming
-/// [`classify`] adapter so the rules can be tested without
-/// constructing a real `reqwest::Response`.
+/// Bridge between [`classify_status`] and the response-consuming
+/// [`classify`] adapter so the rules can be tested without a real
+/// `reqwest::Response`.
 #[derive(Debug, PartialEq, Eq)]
 enum StatusClass {
     Success,
@@ -76,11 +63,7 @@ enum StatusClass {
     Permanent,
 }
 
-/// Pure: classify an HTTP status code. 429 from nginx's `limit_req`
-/// plus the full 5xx range count as transient; everything else
-/// outside 2xx is permanent. Splitting the rule out of the loop lets
-/// us test the boundaries (200, 299, 300, 404, 429, 500, 599)
-/// without an HTTP server.
+/// 429 and 5xx are transient; everything outside 2xx is permanent.
 fn classify_status(status: u16) -> StatusClass {
     if status == 429 || (500..600).contains(&status) {
         StatusClass::Transient
@@ -93,10 +76,8 @@ fn classify_status(status: u16) -> StatusClass {
 
 fn classify(result: reqwest::Result<Response>) -> Outcome {
     match result {
-        // Connection-level failures (DNS, TLS, connection reset,
-        // timeout) are transient by nature: a fresh attempt has every
-        // chance of succeeding once whatever blip caused it has
-        // passed.
+        // DNS/TLS/timeout/reset: a fresh attempt has every chance
+        // once the blip passes.
         Err(e) => Outcome::Transient(fmt_error_chain(&e)),
         Ok(r) => match classify_status(r.status().as_u16()) {
             StatusClass::Success => Outcome::Done(r),
@@ -106,10 +87,8 @@ fn classify(result: reqwest::Result<Response>) -> Outcome {
     }
 }
 
-/// Pure: pick the sleep before retry `attempt + 1`, given a
-/// 0-indexed `attempt` that just failed. `None` means the budget is
-/// spent and the caller should surface the failure. Delay doubles
-/// each attempt and is clamped at `policy.max_delay`.
+/// Sleep before retry `attempt + 1` (0-indexed). `None` means the
+/// budget is spent. Doubles each attempt, clamped at `max_delay`.
 fn backoff_for(attempt: u32, policy: RetryPolicy) -> Option<Duration> {
     if attempt + 1 >= policy.max_attempts {
         return None;
@@ -127,11 +106,7 @@ fn backoff_for(attempt: u32, policy: RetryPolicy) -> Option<Duration> {
 mod tests {
     use super::*;
 
-    /// 429 and the full 5xx range are transient. Everything outside
-    /// 2xx that isn't a transient is permanent. The boundaries (200,
-    /// 299, 300, 500, 599, 600) matter because off-by-one in the
-    /// ranges would flip the classification of a real production
-    /// response.
+    /// Boundaries: 200, 299, 300, 429, 500, 599, 600.
     #[test]
     fn classify_status_covers_each_class_and_boundary() {
         assert_eq!(classify_status(200), StatusClass::Success);
@@ -146,9 +121,7 @@ mod tests {
         assert_eq!(classify_status(600), StatusClass::Permanent);
     }
 
-    /// Backoff doubles each attempt and clamps at `max_delay`. The
-    /// final attempt returns `None` so the retry loop knows to give
-    /// up rather than sleep forever.
+    /// Doubles, clamps, then gives up on the final attempt.
     #[test]
     fn backoff_for_doubles_then_clamps_then_gives_up() {
         let policy = RetryPolicy {
@@ -163,9 +136,8 @@ mod tests {
         assert_eq!(backoff_for(4, policy), None);
     }
 
-    /// Doubling must not overflow the `Duration` multiplication or
-    /// the shift used to compute the factor — a pathological
-    /// `max_attempts` shouldn't crash the loop, just hit the clamp.
+    /// Large `attempt` must clamp rather than overflow the shift or
+    /// the `Duration` multiplication.
     #[test]
     fn backoff_for_clamps_at_max_delay_on_large_attempts() {
         let policy = RetryPolicy {
@@ -177,8 +149,7 @@ mod tests {
         assert_eq!(backoff_for(40, policy), Some(Duration::from_secs(8)));
     }
 
-    /// `max_attempts == 1` means no retries — the very first attempt
-    /// failing must return `None`.
+    /// `max_attempts == 1`: no retries.
     #[test]
     fn backoff_for_single_attempt_policy_never_retries() {
         let policy = RetryPolicy {

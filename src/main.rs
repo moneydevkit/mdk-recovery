@@ -9,13 +9,6 @@ use mdk_recovery::scan::esplora::broadcast;
 use mdk_recovery::sign::SignedSweep;
 use mdk_recovery::{RecoveryError, Result, scan};
 
-/// Maximum number of esplora requests in flight at once during a
-/// scan. Sized to sit inside the burst budget of blockstream/esplora's
-/// stock nginx config (`burst=10` on `/api/`). The per-second budget
-/// is a property of the public endpoint, not a knob the operator
-/// usefully tunes, so this stays out of the CLI surface.
-const SCAN_CONCURRENCY: usize = 8;
-
 /// Common options for every subcommand that needs a mnemonic and a
 /// network: identical clap surface, no copy-paste in each variant.
 #[derive(Args)]
@@ -123,7 +116,7 @@ enum Cmd {
     /// Print 1000 P2WPKH + 1000 P2WSH-anchor static_payment scripts and
     /// BIP-84 addresses with derivation indices. No I/O.
     Derive(DeriveArgs),
-    /// Pure scan via the per-network esplora endpoint. Read-only.
+    /// Scan via the per-network esplora endpoint. Read-only.
     Scan(ScanArgs),
     /// Build a recovery plan and render JSON + human summary. No
     /// signing, no broadcast.
@@ -157,14 +150,7 @@ fn run_derive(args: DeriveArgs) -> Result<()> {
 async fn run_scan(args: ScanArgs) -> Result<()> {
     let mnemonic = read_mnemonic(&args.common.mnemonic_file)?;
     let client = build_client(args.common.network)?;
-    let report = scan::run(
-        &client,
-        &mnemonic,
-        args.common.network,
-        SCAN_CONCURRENCY,
-        args.scan_anchors,
-    )
-    .await?;
+    let report = scan::run(&client, &mnemonic, args.common.network, args.scan_anchors).await?;
     render(&report, OutputFormat::from_json_flag(args.json))
 }
 
@@ -190,14 +176,7 @@ async fn run_sweep(args: SweepArgs) -> Result<()> {
 async fn build_plan(args: &SweepCommonArgs) -> Result<mdk_recovery::plan::RecoveryPlan> {
     let mnemonic = read_mnemonic(&args.common.mnemonic_file)?;
     let client = build_client(args.common.network)?;
-    let report = scan::run(
-        &client,
-        &mnemonic,
-        args.common.network,
-        SCAN_CONCURRENCY,
-        args.scan_anchors,
-    )
-    .await?;
+    let report = scan::run(&client, &mnemonic, args.common.network, args.scan_anchors).await?;
     report.into_plan(args.to.clone(), args.feerate_sat_vb)
 }
 

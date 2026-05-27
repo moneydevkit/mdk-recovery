@@ -76,9 +76,9 @@ pub fn confirm_destination(expected: &Address) -> Result<()> {
     check_destination(input.trim(), &expected.to_string())
 }
 
-/// Pure half of [`confirm_destination`]: assert `input` matches
-/// `expected` byte-for-byte in constant time. Split out so the
-/// matching logic is unit-testable without a stdin fixture.
+/// Assert `input` matches `expected` byte-for-byte in constant
+/// time. Split out from [`confirm_destination`] so the matching
+/// logic is unit-testable without a stdin fixture.
 pub fn check_destination(input: &str, expected: &str) -> Result<()> {
     if input.as_bytes().ct_eq(expected.as_bytes()).into() {
         Ok(())
@@ -87,15 +87,17 @@ pub fn check_destination(input: &str, expected: &str) -> Result<()> {
     }
 }
 
-/// Look up the esplora base URL for `network`. Mainnet/testnet/signet
-/// hard-code the public blockstream.info endpoints; regtest reads
-/// from [`REGTEST_ENV_VAR`] so the test harness can point us at its
-/// own esplora-electrs without exposing a CLI override flag.
+/// Look up the esplora base URL for `network`. Mainnet points at the
+/// MDK-operated esplora; signet points at mutinynet (the custom-
+/// signet MDK actually targets, not vanilla signet); testnet keeps
+/// the public blockstream endpoint. Regtest reads from
+/// [`REGTEST_ENV_VAR`] so the test harness can point us at its own
+/// esplora-electrs without exposing a CLI override flag.
 pub fn endpoint_for(network: Network) -> Result<String> {
     match network {
-        Network::Bitcoin => Ok("https://blockstream.info/api".into()),
+        Network::Bitcoin => Ok("https://esplora.moneydevkit.com/api".into()),
         Network::Testnet => Ok("https://blockstream.info/testnet/api".into()),
-        Network::Signet => Ok("https://blockstream.info/signet/api".into()),
+        Network::Signet => Ok("https://mutinynet.com/api".into()),
         Network::Regtest => {
             std::env::var(REGTEST_ENV_VAR).map_err(|_| RecoveryError::RegtestEndpointMissing)
         }
@@ -139,10 +141,10 @@ mod tests {
         assert!(
             endpoint_for(Network::Bitcoin)
                 .unwrap()
-                .contains("blockstream.info")
+                .contains("esplora.moneydevkit.com")
         );
         assert!(endpoint_for(Network::Testnet).unwrap().contains("testnet"));
-        assert!(endpoint_for(Network::Signet).unwrap().contains("signet"));
+        assert!(endpoint_for(Network::Signet).unwrap().contains("mutinynet"));
     }
 
     #[test]
