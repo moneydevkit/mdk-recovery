@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod derive;
 pub mod error;
+pub mod interactive;
 pub mod plan;
 pub mod scan;
 pub mod seed;

@@ -53,7 +53,7 @@ pub fn read_mnemonic(path: &str) -> Result<Mnemonic> {
 /// Parse `raw` as a BIP-39 mnemonic, ignoring surrounding whitespace
 /// and collapsing runs of spaces / tabs / newlines so files written
 /// by editors with trailing newlines or wrapped lines still parse.
-fn parse_mnemonic(raw: &str) -> Result<Mnemonic> {
+pub(crate) fn parse_mnemonic(raw: &str) -> Result<Mnemonic> {
     let normalised = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     Mnemonic::from_str(&normalised).map_err(|e| RecoveryError::InvalidMnemonic(e.to_string()))
 }

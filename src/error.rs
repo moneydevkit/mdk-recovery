@@ -37,6 +37,9 @@ pub enum RecoveryError {
     #[error("estimated fee {fee} exceeds total input value {total_in}")]
     FeeExceedsValue { fee: Amount, total_in: Amount },
 
+    #[error("invalid destination address: {0}")]
+    InvalidDestination(String),
+
     #[error("invalid mnemonic: {0}")]
     InvalidMnemonic(String),
 
