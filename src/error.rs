@@ -28,9 +28,6 @@ pub enum RecoveryError {
     #[error("total input value would overflow")]
     AmountOverflow,
 
-    #[error("destination confirmation did not match")]
-    DestinationConfirmationMismatch,
-
     #[error("recovery plan has no inputs to sweep")]
     EmptyInputs,
 

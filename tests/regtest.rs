@@ -174,7 +174,6 @@ async fn sweep_to_fresh_address(
         }
         recovery_command(&url)
             .args(&args)
-            .write_stdin(format!("{dest_str}\n"))
             .timeout(Duration::from_secs(60))
             .assert()
             .success();

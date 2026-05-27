@@ -2,7 +2,7 @@ use bitcoin::Address;
 use bitcoin::address::NetworkUnchecked;
 use clap::{Args, Parser, Subcommand};
 use esplora_client::{AsyncClient, Builder};
-use mdk_recovery::cli::{OutputFormat, confirm_destination, endpoint_for, read_mnemonic};
+use mdk_recovery::cli::{OutputFormat, endpoint_for, read_mnemonic};
 use mdk_recovery::error::fmt_error_chain;
 use mdk_recovery::plan::DEFAULT_FEERATE_SAT_VB;
 use mdk_recovery::scan::esplora::broadcast;
@@ -96,10 +96,9 @@ struct SweepArgs {
     #[command(flatten)]
     sweep: SweepCommonArgs,
 
-    /// After signing, prompt for the destination address again and
-    /// broadcast the sweep through the per-network esplora endpoint.
-    /// Without this flag the signed transaction is rendered but not
-    /// submitted.
+    /// Broadcast the signed sweep through the per-network esplora
+    /// endpoint. Without this flag the signed transaction is rendered
+    /// but not submitted.
     #[arg(long)]
     broadcast: bool,
 }
@@ -164,7 +163,6 @@ async fn run_sweep(args: SweepArgs) -> Result<()> {
     let (sweep, tx) = SignedSweep::from_plan(plan);
 
     if args.broadcast {
-        confirm_destination(&sweep.plan.destination)?;
         let client = build_client(args.sweep.common.network)?;
         broadcast(&client, &tx).await?;
     }
