@@ -1,181 +1,171 @@
+//! Flat interactive `mdk-recovery` binary.
+//!
+//! One run, one job: read a mnemonic, scan the seed's enumerable
+//! scripts via the per-network esplora, and (after a `[y/N]`
+//! summary block) broadcast a sweep to a destination address.
+
+use std::io::{self, IsTerminal, Write};
+
 use bitcoin::Address;
 use bitcoin::address::NetworkUnchecked;
-use clap::{Args, Parser, Subcommand};
+use clap::Parser;
 use esplora_client::{AsyncClient, Builder};
-use mdk_recovery::cli::{OutputFormat, endpoint_for, read_mnemonic};
+use mdk_recovery::cli::endpoint_for;
 use mdk_recovery::error::fmt_error_chain;
+use mdk_recovery::interactive::{
+    explorer_tx_url, prompt_confirm, prompt_destination, prompt_mnemonic, render_summary,
+};
 use mdk_recovery::plan::DEFAULT_FEERATE_SAT_VB;
+use mdk_recovery::scan::ScanReport;
 use mdk_recovery::scan::esplora::broadcast;
 use mdk_recovery::sign::SignedSweep;
 use mdk_recovery::{RecoveryError, Result, scan};
-
-/// Common options for every subcommand that needs a mnemonic and a
-/// network: identical clap surface, no copy-paste in each variant.
-#[derive(Args)]
-struct CommonArgs {
-    /// Path to a file containing the BIP-39 mnemonic. Use `-` to
-    /// read from stdin. The mnemonic is never accepted on argv.
-    #[arg(long)]
-    mnemonic_file: String,
-
-    /// Bitcoin network to derive on and (where applicable) scan.
-    #[arg(long, value_parser = parse_network)]
-    network: bitcoin::Network,
-}
-
-#[derive(Args)]
-struct ScanArgs {
-    #[command(flatten)]
-    common: CommonArgs,
-
-    /// Also query the 1000 static_payment P2WSH anchor scripts. Off
-    /// by default since MDK does not open anchor channels; turning
-    /// this on roughly doubles the script count and scan time. Only
-    /// useful if anchor-channel close outputs may have been paid to
-    /// this seed by another implementation.
-    #[arg(long)]
-    scan_anchors: bool,
-
-    /// Emit the report as pretty-printed JSON instead of the
-    /// human-readable summary.
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Args)]
-struct DeriveArgs {
-    #[command(flatten)]
-    common: CommonArgs,
-
-    /// Emit the report as pretty-printed JSON instead of the
-    /// human-readable summary.
-    #[arg(long)]
-    json: bool,
-}
-
-/// Args shared by `plan` and `sweep`: scan parameters plus where to
-/// send the swept funds and at what feerate.
-#[derive(Args)]
-struct SweepCommonArgs {
-    #[command(flatten)]
-    common: CommonArgs,
-
-    /// Destination address for the sweep. Must validate against
-    /// `--network`. Bech32 / P2WPKH / P2WSH / P2SH / P2PKH all OK;
-    /// P2TR is supported only for the dust threshold lookup.
-    #[arg(long)]
-    to: Address<NetworkUnchecked>,
-
-    /// Feerate in sat/vB. Defaults to a moderate value; raise it if
-    /// the mempool is congested or the recovery is time-sensitive.
-    #[arg(long, default_value_t = DEFAULT_FEERATE_SAT_VB)]
-    feerate_sat_vb: u64,
-
-    /// Also query the 1000 static_payment P2WSH anchor scripts. Off
-    /// by default since MDK does not open anchor channels; turning
-    /// this on roughly doubles the script count and scan time. Only
-    /// useful if anchor-channel close outputs may have been paid to
-    /// this seed by another implementation.
-    #[arg(long)]
-    scan_anchors: bool,
-
-    /// Emit the report as pretty-printed JSON instead of the
-    /// human-readable summary.
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Args)]
-struct PlanArgs {
-    #[command(flatten)]
-    sweep: SweepCommonArgs,
-}
-
-#[derive(Args)]
-struct SweepArgs {
-    #[command(flatten)]
-    sweep: SweepCommonArgs,
-
-    /// Broadcast the signed sweep through the per-network esplora
-    /// endpoint. Without this flag the signed transaction is rendered
-    /// but not submitted.
-    #[arg(long)]
-    broadcast: bool,
-}
+use serde::Serialize;
 
 #[derive(Parser)]
 #[command(name = "mdk-recovery", version, about = "Seed-only LDK recovery")]
 struct Cli {
-    #[command(subcommand)]
-    cmd: Cmd,
+    /// Bitcoin network to derive on and scan against.
+    #[arg(
+        long,
+        value_parser = parse_network,
+        default_value_t = bitcoin::Network::Bitcoin,
+    )]
+    network: bitcoin::Network,
+
+    /// Destination address. Required under `--json`; on a TTY,
+    /// omitting it triggers an interactive prompt instead.
+    #[arg(long)]
+    to: Option<Address<NetworkUnchecked>>,
+
+    /// Feerate in sat/vB. Five is a moderate default that confirms
+    /// in a few blocks under typical mempool load; raise it for a
+    /// time-sensitive recovery.
+    #[arg(long, default_value_t = DEFAULT_FEERATE_SAT_VB)]
+    feerate_sat_vb: u64,
+
+    /// Also query the 1000 static_payment P2WSH anchor scripts.
+    /// Off by default since MDK does not open anchor channels;
+    /// turning this on roughly doubles the scan time.
+    #[arg(long)]
+    scan_anchors: bool,
+
+    /// Read the mnemonic from stdin to EOF instead of prompting on
+    /// the controlling TTY. The CI / scripted path.
+    #[arg(long)]
+    mnemonic_stdin: bool,
+
+    /// Skip the `[y/N]` confirmation. Required under `--json`.
+    #[arg(long)]
+    yes: bool,
+
+    /// Print the per-input listing alongside the summary block.
+    #[arg(long)]
+    verbose: bool,
+
+    /// Emit a single JSON object on stdout describing the broadcast
+    /// transaction. Implies non-interactive: requires `--to`,
+    /// `--yes`, and a mnemonic on stdin (the last is enforced at
+    /// runtime since clap cannot see TTY state).
+    #[arg(long, requires = "to", requires = "yes")]
+    json: bool,
 }
 
-#[derive(Subcommand)]
-enum Cmd {
-    /// Print 1000 P2WPKH + 1000 P2WSH-anchor static_payment scripts and
-    /// BIP-84 addresses with derivation indices. No I/O.
-    Derive(DeriveArgs),
-    /// Scan via the per-network esplora endpoint. Read-only.
-    Scan(ScanArgs),
-    /// Build a recovery plan and render JSON + human summary. No
-    /// signing, no broadcast.
-    Plan(PlanArgs),
-    /// Build, sign, and (with `--broadcast`) submit the sweep transaction.
-    Sweep(SweepArgs),
+/// Stdout payload for `--json`. Matches the shape promised in
+/// PLAN.md: txid + raw hex + (best-effort) explorer URL.
+#[derive(Serialize)]
+struct JsonReport {
+    txid: String,
+    raw_hex: String,
+    explorer_url: Option<String>,
 }
 
 fn main() {
-    if let Err(e) = run(Cli::parse()) {
+    let cli = Cli::parse();
+    if let Err(msg) = validate_runtime_invariants(&cli) {
+        eprintln!("error: {msg}");
+        std::process::exit(2);
+    }
+    if let Err(e) = tokio_runtime().and_then(|rt| rt.block_on(run(cli))) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
-    match cli.cmd {
-        Cmd::Derive(args) => run_derive(args),
-        Cmd::Scan(args) => tokio_runtime()?.block_on(run_scan(args)),
-        Cmd::Plan(args) => tokio_runtime()?.block_on(run_plan(args)),
-        Cmd::Sweep(args) => tokio_runtime()?.block_on(run_sweep(args)),
+/// Catch the one invariant clap cannot: `--json` plus a TTY stdin
+/// without `--mnemonic-stdin` would silently fall into the hidden
+/// prompt. The static `--json` ⇒ `--to` / `--yes` requirements are
+/// enforced by clap's `requires` attribute on the field.
+fn validate_runtime_invariants(cli: &Cli) -> std::result::Result<(), &'static str> {
+    if cli.json && !cli.mnemonic_stdin && io::stdin().is_terminal() {
+        return Err("--json requires the mnemonic on stdin (use --mnemonic-stdin or pipe it in)");
     }
+    Ok(())
 }
 
-fn run_derive(args: DeriveArgs) -> Result<()> {
-    let mnemonic = read_mnemonic(&args.common.mnemonic_file)?;
-    let report = scan::derive_all(&mnemonic, args.common.network);
-    render(&report, OutputFormat::from_json_flag(args.json))
-}
+async fn run(cli: Cli) -> Result<()> {
+    let mnemonic = prompt_mnemonic(cli.mnemonic_stdin)?;
+    let client = build_client(cli.network)?;
+    let report = scan::run(&client, &mnemonic, cli.network, cli.scan_anchors).await?;
 
-async fn run_scan(args: ScanArgs) -> Result<()> {
-    let mnemonic = read_mnemonic(&args.common.mnemonic_file)?;
-    let client = build_client(args.common.network)?;
-    let report = scan::run(&client, &mnemonic, args.common.network, args.scan_anchors).await?;
-    render(&report, OutputFormat::from_json_flag(args.json))
-}
+    if is_empty(&report) {
+        eprintln!("Nothing to recover on {}.", cli.network);
+        return Ok(());
+    }
 
-async fn run_plan(args: PlanArgs) -> Result<()> {
-    let plan = build_plan(&args.sweep).await?;
-    render(&plan, OutputFormat::from_json_flag(args.sweep.json))
-}
+    let destination = resolve_destination(&cli)?;
+    let plan = report.into_plan(destination, cli.feerate_sat_vb)?;
 
-async fn run_sweep(args: SweepArgs) -> Result<()> {
-    let plan = build_plan(&args.sweep).await?;
+    if !cli.json {
+        render_summary(&plan, cli.verbose, io::stderr().lock()).map_err(RecoveryError::from)?;
+    }
+
+    if !cli.yes && !prompt_confirm("Broadcast?")? {
+        eprintln!("Aborted; no transaction broadcast.");
+        return Ok(());
+    }
+
     let (sweep, tx) = SignedSweep::from_plan(plan);
+    broadcast(&client, &tx).await?;
+    let explorer = explorer_tx_url(cli.network, sweep.txid);
 
-    if args.broadcast {
-        let client = build_client(args.sweep.common.network)?;
-        broadcast(&client, &tx).await?;
+    if cli.json {
+        let payload = JsonReport {
+            txid: sweep.txid.to_string(),
+            raw_hex: sweep.raw_hex,
+            explorer_url: explorer,
+        };
+        let json = serde_json::to_string_pretty(&payload)
+            .map_err(|e| RecoveryError::Io(io::Error::other(e)))?;
+        println!("{json}");
+    } else {
+        let mut out = io::stdout().lock();
+        match explorer {
+            Some(url) => writeln!(out, "Done. Track at: {url}").map_err(RecoveryError::from)?,
+            None => writeln!(out, "Done. txid: {}", sweep.txid).map_err(RecoveryError::from)?,
+        }
     }
-
-    render(&sweep, OutputFormat::from_json_flag(args.sweep.json))
+    Ok(())
 }
 
-/// Common scan + plan-construction path used by `plan` and `sweep`.
-async fn build_plan(args: &SweepCommonArgs) -> Result<mdk_recovery::plan::RecoveryPlan> {
-    let mnemonic = read_mnemonic(&args.common.mnemonic_file)?;
-    let client = build_client(args.common.network)?;
-    let report = scan::run(&client, &mnemonic, args.common.network, args.scan_anchors).await?;
-    report.into_plan(args.to.clone(), args.feerate_sat_vb)
+/// `ScanReport` carries three vecs of hits; empty across all three
+/// means there's nothing to sweep. We check structure instead of
+/// `total_value()` so a (defensive) zero-value UTXO would still
+/// trigger a plan attempt and surface the dust failure cleanly.
+fn is_empty(report: &ScanReport) -> bool {
+    report.static_payment_p2wpkh.is_empty()
+        && report.static_payment_anchor.is_empty()
+        && report.bip84.is_empty()
+}
+
+/// Use `--to` if it's set; otherwise prompt. The prompt validates
+/// the network up front so the user sees `network mismatch` before
+/// the plan tries to build.
+fn resolve_destination(cli: &Cli) -> Result<Address<NetworkUnchecked>> {
+    if let Some(addr) = cli.to.clone() {
+        return Ok(addr);
+    }
+    Ok(prompt_destination(cli.network)?.into_unchecked())
 }
 
 fn build_client(network: bitcoin::Network) -> Result<AsyncClient> {
@@ -183,24 +173,6 @@ fn build_client(network: bitcoin::Network) -> Result<AsyncClient> {
     Builder::new(&url)
         .build_async()
         .map_err(|e| RecoveryError::Esplora(fmt_error_chain(&e)))
-}
-
-/// Print `report` in the requested format. JSON goes through serde
-/// pretty-print; human goes through `Display`. Both write to stdout
-/// so the caller can pipe.
-fn render<T>(report: &T, format: OutputFormat) -> Result<()>
-where
-    T: serde::Serialize + std::fmt::Display,
-{
-    match format {
-        OutputFormat::Human => println!("{report}"),
-        OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(report)
-                .map_err(|e| RecoveryError::Io(std::io::Error::other(e)))?;
-            println!("{json}");
-        }
-    }
-    Ok(())
 }
 
 fn parse_network(raw: &str) -> std::result::Result<bitcoin::Network, String> {

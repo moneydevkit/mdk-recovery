@@ -131,10 +131,12 @@ async fn fund_script(
     bitcoind.fund(&addr, amount).await;
 }
 
-/// Run `mdk-recovery sweep --broadcast` with the destination set to
-/// a fresh bitcoind address. `scan_anchors` toggles the matching CLI
-/// flag for tests that fund anchor scripts. Returns the destination
-/// so the caller can assert against its post-sweep balance.
+/// Run the flat `mdk-recovery` binary against a fresh bitcoind
+/// address. The mnemonic is piped on stdin (via `--mnemonic-stdin`)
+/// and `--yes` skips the interactive confirmation. `scan_anchors`
+/// toggles the matching CLI flag for tests that fund anchor
+/// scripts. Returns the destination so the caller can assert
+/// against its post-sweep balance.
 async fn sweep_to_fresh_address(
     bitcoind: &TestBitcoind,
     mock_url: &str,
@@ -150,30 +152,26 @@ async fn sweep_to_fresh_address(
         .expect("parse dest");
     let dest = dest.require_network(network).expect("network match");
 
-    let mnemonic_file = tempfile::NamedTempFile::new().expect("tempfile");
-    std::fs::write(mnemonic_file.path(), mnemonic).expect("write mnemonic");
-
     let url = mock_url.to_string();
     let dest_str = dest.to_string();
-    let mnemonic_path = mnemonic_file.path().to_path_buf();
+    let mnemonic_str = mnemonic.to_string();
     tokio::task::spawn_blocking(move || {
         let mut args: Vec<&str> = vec![
-            "sweep",
-            "--mnemonic-file",
-            mnemonic_path.to_str().unwrap(),
             "--network",
             "regtest",
             "--to",
             &dest_str,
             "--feerate-sat-vb",
             "5",
-            "--broadcast",
+            "--mnemonic-stdin",
+            "--yes",
         ];
         if scan_anchors {
             args.push("--scan-anchors");
         }
         recovery_command(&url)
             .args(&args)
+            .write_stdin(mnemonic_str)
             .timeout(Duration::from_secs(60))
             .assert()
             .success();
