@@ -53,7 +53,7 @@ pub fn prompt_destination(network: Network) -> Result<Address> {
     let mut stderr = io::stderr();
     let mut last_err = None;
     for _ in 0..DESTINATION_RETRY_LIMIT {
-        write!(stderr, "Where to? ")?;
+        write!(stderr, "Where to? (onchain address): ")?;
         stderr.flush()?;
         let mut line = String::new();
         stdin.lock().read_line(&mut line)?;
@@ -109,18 +109,28 @@ pub fn explorer_tx_url(network: Network, txid: Txid) -> Option<String> {
     }
 }
 
-/// Write the summary to `w`. Under `verbose`, append a per-input listing to
-/// see exactly which outpoints fed the sweep.
-pub fn render_summary<W: Write>(plan: &RecoveryPlan, verbose: bool, mut w: W) -> io::Result<()> {
-    let total_in: Amount = plan.inputs.iter().map(RecoveryInput::value).sum();
-
-    let n = plan.inputs.len();
+/// Write the "Found N output(s) totalling X BTC." header. Split out
+/// from the rest of the summary so it can render before the user is
+/// asked for a destination — they often want to know whether the
+/// scan found anything (and how much) before deciding to type an
+/// address.
+pub fn render_found_line<W: Write>(count: usize, total: Amount, mut w: W) -> io::Result<()> {
     writeln!(
         w,
-        "Found {n} output{plural} totalling {total}.",
-        plural = if n == 1 { "" } else { "s" },
-        total = format_btc(total_in),
-    )?;
+        "Found {count} output{plural} totalling {total}.",
+        plural = if count == 1 { "" } else { "s" },
+        total = format_btc(total),
+    )
+}
+
+/// Write the destination / fee / net block (and, under `verbose`, a
+/// per-input listing) to `w`. Assumes [`render_found_line`] already
+/// fired, so this picks up at `To:`.
+pub fn render_destination_summary<W: Write>(
+    plan: &RecoveryPlan,
+    verbose: bool,
+    mut w: W,
+) -> io::Result<()> {
     writeln!(w, "To:   {}", plan.destination)?;
     writeln!(
         w,
@@ -215,12 +225,12 @@ mod tests {
         Address::from_str("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu").unwrap()
     }
 
-    /// The non-verbose summary block must match the Martin mockup
+    /// The destination summary block must match the Martin mockup
     /// byte-for-byte. Lock it in so a stray `writeln!` reorder
     /// can't silently change what the user sees before approving
     /// a broadcast.
     #[test]
-    fn render_summary_matches_mockup() {
+    fn render_destination_summary_matches_mockup() {
         let plan = RecoveryPlan::new(
             Network::Bitcoin,
             vec![
@@ -234,35 +244,40 @@ mod tests {
         .expect("valid plan");
 
         let mut out = Vec::new();
-        render_summary(&plan, false, &mut out).expect("render");
+        render_destination_summary(&plan, false, &mut out).expect("render");
         let rendered = String::from_utf8(out).expect("utf8");
 
         assert!(
-            rendered.starts_with("Found 3 outputs totalling 0.00482911 BTC.\n"),
+            rendered.starts_with("To:   bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu\n"),
             "header mismatch: {rendered:?}",
         );
-        assert!(rendered.contains("\nTo:   bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu\n"));
         assert!(rendered.contains("\nFee:  "));
         assert!(rendered.contains(" sat/vB\n"));
         assert!(rendered.contains("\nNet:  0.004"));
     }
 
-    /// Singular phrasing for a one-input sweep — small detail, but
+    /// The found line is what the user sees before the destination
+    /// prompt; it must render the right plural and amount.
+    #[test]
+    fn render_found_line_plural_and_amount() {
+        let mut out = Vec::new();
+        render_found_line(3, Amount::from_sat(482_911), &mut out).expect("render");
+        assert_eq!(
+            String::from_utf8(out).expect("utf8"),
+            "Found 3 outputs totalling 0.00482911 BTC.\n",
+        );
+    }
+
+    /// Singular phrasing for a one-output find — small detail, but
     /// "Found 1 outputs" reads like a bug to anyone literate.
     #[test]
-    fn render_summary_uses_singular_for_one_input() {
-        let plan = RecoveryPlan::new(
-            Network::Bitcoin,
-            vec![fixture_bip84_input(1_000_000, 0)],
-            mainnet_address(),
-            5,
-        )
-        .expect("valid plan");
-
+    fn render_found_line_uses_singular_for_one_output() {
         let mut out = Vec::new();
-        render_summary(&plan, false, &mut out).expect("render");
-        let rendered = String::from_utf8(out).expect("utf8");
-        assert!(rendered.starts_with("Found 1 output totalling "));
+        render_found_line(1, Amount::from_sat(1_000_000), &mut out).expect("render");
+        assert_eq!(
+            String::from_utf8(out).expect("utf8"),
+            "Found 1 output totalling 0.01000000 BTC.\n",
+        );
     }
 
     /// Verbose mode appends a per-input listing. Don't pin every
@@ -270,7 +285,7 @@ mod tests {
     /// the kind label show up so the auditor can map back to the
     /// scan.
     #[test]
-    fn render_summary_verbose_lists_inputs() {
+    fn render_destination_summary_verbose_lists_inputs() {
         let plan = RecoveryPlan::new(
             Network::Bitcoin,
             vec![fixture_bip84_input(500_000, 7)],
@@ -280,7 +295,7 @@ mod tests {
         .expect("valid plan");
 
         let mut out = Vec::new();
-        render_summary(&plan, true, &mut out).expect("render");
+        render_destination_summary(&plan, true, &mut out).expect("render");
         let rendered = String::from_utf8(out).expect("utf8");
         assert!(rendered.contains("Inputs:"));
         assert!(rendered.contains("bip84 receive #0"));

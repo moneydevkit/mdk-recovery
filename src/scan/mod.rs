@@ -160,6 +160,18 @@ fn build_scan_report(derived: Derived, utxos: Vec<(ScriptBuf, Vec<Utxo>)>) -> Sc
 }
 
 impl ScanReport {
+    /// Number of UTXOs across every hit. Matches
+    /// `into_recovery_inputs().len()` without consuming `self`, so
+    /// callers can render a count alongside `total_value` before
+    /// committing to a plan.
+    pub fn input_count(&self) -> usize {
+        let count_utxos =
+            |hits: &[StaticPaymentHit]| -> usize { hits.iter().map(|h| h.utxos.len()).sum() };
+        count_utxos(&self.static_payment_p2wpkh)
+            + count_utxos(&self.static_payment_anchor)
+            + self.bip84.iter().map(|h| h.utxos.len()).sum::<usize>()
+    }
+
     /// Total swept value across every hit. Saturates on overflow —
     /// would require a >21M-BTC discovery, but keeps the function
     /// total so callers don't need a `Result`.

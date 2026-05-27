@@ -13,7 +13,8 @@ use esplora_client::{AsyncClient, Builder};
 use mdk_recovery::cli::endpoint_for;
 use mdk_recovery::error::fmt_error_chain;
 use mdk_recovery::interactive::{
-    explorer_tx_url, prompt_confirm, prompt_destination, prompt_mnemonic, render_summary,
+    explorer_tx_url, prompt_confirm, prompt_destination, prompt_mnemonic,
+    render_destination_summary, render_found_line,
 };
 use mdk_recovery::plan::DEFAULT_FEERATE_SAT_VB;
 use mdk_recovery::scan::ScanReport;
@@ -106,6 +107,7 @@ fn validate_runtime_invariants(cli: &Cli) -> std::result::Result<(), &'static st
 async fn run(cli: Cli) -> Result<()> {
     let mnemonic = prompt_mnemonic(cli.mnemonic_stdin)?;
     let client = build_client(cli.network)?;
+    eprintln!("Scanning {}...", cli.network);
     let report = scan::run(&client, &mnemonic, cli.network, cli.scan_anchors).await?;
 
     if is_empty(&report) {
@@ -113,11 +115,21 @@ async fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
+    if !cli.json {
+        render_found_line(
+            report.input_count(),
+            report.total_value(),
+            io::stderr().lock(),
+        )
+        .map_err(RecoveryError::from)?;
+    }
+
     let destination = resolve_destination(&cli)?;
     let plan = report.into_plan(destination, cli.feerate_sat_vb)?;
 
     if !cli.json {
-        render_summary(&plan, cli.verbose, io::stderr().lock()).map_err(RecoveryError::from)?;
+        render_destination_summary(&plan, cli.verbose, io::stderr().lock())
+            .map_err(RecoveryError::from)?;
     }
 
     if !cli.yes && !prompt_confirm("Broadcast?")? {
