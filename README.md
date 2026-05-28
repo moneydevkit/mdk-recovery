@@ -117,12 +117,21 @@ behind a small in-process esplora-shaped HTTP shim, fund the derived scripts
 directly via bitcoind RPC, run the binary as a subprocess, and
 assert the funds moved.
 
-## Version requirements
+## Releasing
 
-- Rust 2024 edition (rustc 1.85+).
-- Bitcoin Core 29.0 for the regtest harness (the version
-  `corepc-node`'s `29_0` feature targets). The nix flake pins
-  this; ad-hoc builds must match.
-- The 1000 v2 static_payment scripts are pinned byte-for-byte
-  against `lightning::sign::KeysManager::possible_v2_counterparty_closed_balance_spks`
-  in `lightning = 0.2`.
+```
+just bump X.Y.Z           # branch + bump + commit + push
+
+# open a PR, merge to master, then from master:
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+Pre-releases use a semver hyphen (`X.Y.Z-rc.1`, `X.Y.Z-beta.0`).
+
+To redo a tag:
+
+```
+git push --delete origin vX.Y.Z
+git tag -d vX.Y.Z
+```
