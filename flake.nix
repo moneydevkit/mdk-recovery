@@ -129,6 +129,47 @@
             }
           )
         );
+
+        # Cross-compile x86_64-apple-darwin from the aarch64-darwin
+        # runner. macOS hosts have a universal SDK and clang that
+        # targets either arch, so no extra linker config is needed —
+        # just the x86_64 rust-std combined with the native toolchain.
+        isAarch64Darwin = system == "aarch64-darwin";
+
+        darwinX64Toolchain = lib.optionalAttrs isAarch64Darwin (
+          fenixPkgs.combine [
+            (fenixPkgs.stable.withComponents [
+              "cargo"
+              "rustc"
+            ])
+            fenixPkgs.targets.x86_64-apple-darwin.stable.rust-std
+          ]
+        );
+
+        darwinX64CraneLib = lib.optionalAttrs isAarch64Darwin (
+          (crane.mkLib pkgs).overrideToolchain darwinX64Toolchain
+        );
+
+        darwinX64Args = lib.optionalAttrs isAarch64Darwin (
+          commonArgs
+          // {
+            CARGO_BUILD_TARGET = "x86_64-apple-darwin";
+          }
+        );
+
+        darwinX64CargoArtifacts = lib.optionalAttrs isAarch64Darwin (
+          darwinX64CraneLib.buildDepsOnly darwinX64Args
+        );
+
+        darwinX64Bin = lib.optionalAttrs isAarch64Darwin (
+          darwinX64CraneLib.buildPackage (
+            darwinX64Args
+            // {
+              cargoArtifacts = darwinX64CargoArtifacts;
+              doCheck = false;
+            }
+          )
+        );
       in
       {
         packages = {
@@ -142,6 +183,9 @@
         }
         // lib.optionalAttrs isLinux {
           static = staticBin;
+        }
+        // lib.optionalAttrs isAarch64Darwin {
+          darwin-x64 = darwinX64Bin;
         };
 
         checks = {
