@@ -36,10 +36,16 @@ jobs:
         include:
           - runner: ubuntu-latest
             triple: linux-x64
+            flake-output: .#release
           - runner: ubuntu-24.04-arm
             triple: linux-arm64
+            flake-output: .#release
           - runner: macos-latest
             triple: darwin-arm64
+            flake-output: .#release
+          - runner: macos-latest
+            triple: darwin-x64
+            flake-output: .#darwin-x64
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -51,7 +57,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
       - name: Build release binary
-        run: nix build .#release --print-build-logs
+        run: nix build ${{ matrix.flake-output }} --print-build-logs
 
       - name: Stage binary with triple-suffixed name
         run: cp result/bin/mdk-recovery mdk-recovery-${{ matrix.triple }}
@@ -61,32 +67,6 @@ jobs:
         with:
           name: mdk-recovery-${{ matrix.triple }}
           path: mdk-recovery-${{ matrix.triple }}
-
-  # Cross-compile darwin-x64 from the arm64 runner with cargo + rustup.
-  build-darwin-x64:
-    name: Build (darwin-x64)
-    needs: check-version
-    runs-on: macos-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
-
-      - name: Build release binary
-        run: cargo build --release --locked --target x86_64-apple-darwin
-
-      - name: Stage binary with triple-suffixed name
-        run: cp target/x86_64-apple-darwin/release/mdk-recovery mdk-recovery-darwin-x64
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: mdk-recovery-darwin-x64
-          path: mdk-recovery-darwin-x64
 
   build-windows:
     name: Build (win32-x64)
@@ -118,7 +98,7 @@ jobs:
 
   release:
     name: Sign and publish
-    needs: [build, build-darwin-x64, build-windows]
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     defaults:
       run:
