@@ -120,6 +120,9 @@ jobs:
     name: Sign and publish
     needs: [build, build-darwin-x64, build-windows]
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: nix develop .#release --command bash -e {0}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -127,11 +130,8 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
 
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
+      - name: Setup Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
       - name: Download all binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -154,7 +154,7 @@ jobs:
         run: |
           printf '%s' "$MINISIGN_KEY" > minisign.key
           printf '%s\n' "$MINISIGN_PASSWORD" | \
-            nix run nixpkgs#minisign -- -S -s minisign.key -m SHA256SUMS
+            minisign -S -s minisign.key -m SHA256SUMS
           rm -f minisign.key
 
       - name: Bump npm package versions to match tag
@@ -203,18 +203,30 @@ jobs:
             SHA256SUMS
             SHA256SUMS.minisig
 
-      - name: Publish platform packages
-        if: env.NODE_AUTH_TOKEN != ''
+      # `actions/setup-node` used to write this `.npmrc` for us. The
+      # release devShell ships npm only, so we do it ourselves.
+      - name: Configure npm auth
+        if: env.NPM_TOKEN != ''
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cat > "$HOME/.npmrc" <<EOF
+          //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+          registry=https://registry.npmjs.org/
+          EOF
+
+      - name: Publish platform packages
+        if: env.NPM_TOKEN != ''
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for pkg in npm/platform/*; do
             (cd "$pkg" && npm publish --access public --tag "$NPM_TAG")
           done
 
       - name: Publish meta package
-        if: env.NODE_AUTH_TOKEN != ''
+        if: env.NPM_TOKEN != ''
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd npm/cli && npm publish --access public --tag "$NPM_TAG"

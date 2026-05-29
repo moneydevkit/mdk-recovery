@@ -110,8 +110,10 @@
           // {
             CARGO_BUILD_TARGET = muslTarget;
             CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-            "CC_${muslTargetUnderscored}" = "${muslCrossPkgs.stdenv.cc}/bin/${muslCrossPkgs.stdenv.cc.targetPrefix}cc";
-            "CARGO_TARGET_${muslTargetUpperUnderscored}_LINKER" = "${muslCrossPkgs.stdenv.cc}/bin/${muslCrossPkgs.stdenv.cc.targetPrefix}cc";
+            "CC_${muslTargetUnderscored}" =
+              "${muslCrossPkgs.stdenv.cc}/bin/${muslCrossPkgs.stdenv.cc.targetPrefix}cc";
+            "CARGO_TARGET_${muslTargetUpperUnderscored}_LINKER" =
+              "${muslCrossPkgs.stdenv.cc}/bin/${muslCrossPkgs.stdenv.cc.targetPrefix}cc";
             nativeBuildInputs = [ muslCrossPkgs.stdenv.cc ];
           }
         );
@@ -162,32 +164,43 @@
           );
         };
 
-        devShells.default = pkgs.mkShell {
-          packages = [
-            toolchain
-            pkgsUnstable.bitcoind
-          ]
-          ++ (with pkgs; [
-            cargo-nextest
-            just
-            nixfmt-rfc-style
-          ]);
+        devShells = {
+          default = pkgs.mkShell {
+            packages = [
+              toolchain
+              pkgsUnstable.bitcoind
+            ]
+            ++ (with pkgs; [
+              cargo-nextest
+              just
+              nixfmt-rfc-style
+            ]);
 
-          env = {
-            BITCOIND_EXE = "${pkgsUnstable.bitcoind}/bin/bitcoind";
-            NIX_SYSTEM = system;
+            env = {
+              BITCOIND_EXE = "${pkgsUnstable.bitcoind}/bin/bitcoind";
+              NIX_SYSTEM = system;
+            };
+
+            shellHook = ''
+              echo "================================================================================"
+              echo "MDK Recovery Development Environment"
+
+              echo "Configuring Project..."
+              git config core.hooksPath .githooks
+
+              echo "Development Environment Ready."
+              echo "================================================================================"
+            '';
           };
 
-          shellHook = ''
-            echo "================================================================================"
-            echo "MDK Recovery Development Environment"
-
-            echo "Configuring Project..."
-            git config core.hooksPath .githooks
-
-            echo "Development Environment Ready."
-            echo "================================================================================"
-          '';
+          # Slim shell for the release job.
+          release = pkgs.mkShell {
+            packages = with pkgs; [
+              nodejs_24
+              minisign
+              jq
+            ];
+          };
         };
       }
     );
