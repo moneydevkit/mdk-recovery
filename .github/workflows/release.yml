@@ -166,6 +166,7 @@ jobs:
           mkdir -p npm/platform/win32-x64/bin
           cp artifacts/mdk-recovery-win32-x64.exe \
             npm/platform/win32-x64/bin/mdk-recovery-win32-x64.exe
+          mkdir -p npm/cli/manifest
           cp SHA256SUMS npm/cli/manifest/SHA256SUMS
 
       - name: Create GitHub release
