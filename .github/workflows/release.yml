@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  attestations: write
 
 jobs:
   check-version:
@@ -126,16 +127,10 @@ jobs:
           sha256sum mdk-recovery-* > ../SHA256SUMS
           cat ../SHA256SUMS
 
-      - name: Sign manifest with minisign
-        if: env.MINISIGN_KEY != ''
-        env:
-          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
-          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-        run: |
-          printf '%s' "$MINISIGN_KEY" > minisign.key
-          printf '%s\n' "$MINISIGN_PASSWORD" | \
-            minisign -S -s minisign.key -m SHA256SUMS
-          rm -f minisign.key
+      - name: Attest build provenance for release binaries
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: "artifacts/mdk-recovery-*"
 
       - name: Bump npm package versions to match tag
         env:
@@ -181,8 +176,6 @@ jobs:
           files: |
             artifacts/mdk-recovery-*
             SHA256SUMS
-            SHA256SUMS.minisig
-
 
       - name: Publish platform packages
         run: |

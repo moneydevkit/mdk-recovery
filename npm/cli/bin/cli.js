@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 // Locates the platform-specific binary subpackage installed via
-// `optionalDependencies`, verifies its SHA-256 against the manifest
-// shipped in this meta package, and execs it. A mismatch — anything
-// the manifest didn't sign for — aborts loudly before the binary
-// runs. The manifest itself is signed with minisign and verified by
-// CI at release time; runtime minisign verification lands once the
-// key management story is settled.
+// `optionalDependencies`, checks its SHA-256 against the manifest
+// shipped in this meta package, and execs it. A mismatch aborts
+// loudly before the binary runs.
+//
+// This check is tamper-evidence within the install closure: it
+// confirms the resolved platform binary matches what this meta
+// package was published with. The trust anchor that lives OUTSIDE
+// the tarball is npm provenance — these packages are published from
+// CI via trusted publishing with a signed provenance attestation
+// (`npm audit signatures`). There is deliberately no embedded-pubkey
+// minisign check here: a signature verified against a key shipped in
+// the same tarball it signs would add nothing over this hash check.
 'use strict';
 
 const fs = require('node:fs');
