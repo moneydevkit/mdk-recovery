@@ -39,6 +39,28 @@ prior wallet state, channel monitor, or VSS access required.
 
 If the seed is gone, nothing recovers anything.
 
+## Installing
+
+```
+npx @moneydevkit/recovery
+```
+
+Pulls the prebuilt binary for your platform from npm and runs it. Or
+build from source (ops, auditors):
+
+```
+cargo install --git https://github.com/moneydevkit/mdk-recovery
+```
+
+## Verifying a download
+
+Every release is built and published by the project's CI, with a
+verifiable record of where it came from.
+
+- Installed from npm: `npm audit signatures`
+- Downloaded from GitHub releases:
+  `gh attestation verify <binary> --repo moneydevkit/mdk-recovery`
+
 ## Usage
 
 Every flag is optional. The bare invocation `mdk-recovery` runs the

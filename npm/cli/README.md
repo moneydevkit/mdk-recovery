@@ -1,20 +1,55 @@
 # @moneydevkit/recovery
 
-`npx @moneydevkit/recovery` invokes the prebuilt `mdk-recovery` binary
-matching the host platform. The binary itself ships in a sibling
-package (`@moneydevkit/recovery-{os}-{cpu}`) selected via
-`optionalDependencies`; the meta package's `bin/cli.js` resolves it,
-verifies its SHA-256 against `manifest/SHA256SUMS`, and execs it.
+Seed-only sweep tool for [MoneyDevKit] LDK clients. Given the MDK
+mnemonic of a node, it enumerates every on-chain output the seed can
+claim, queries an esplora endpoint for matching UTXOs, builds a single
+signed sweep transaction, and optionally broadcasts it.
 
-The manifest is signed with minisign at release time; runtime
-verification of that signature is a follow-up once the release-key
-management story is finalised. Until then the SHA-256 check still
-pins the binary against the manifest npm distributed.
+[MoneyDevKit]: https://moneydevkit.com
 
-## Building locally
+```
+npx @moneydevkit/recovery
+```
 
-The npm packages are not built by `cargo` or `nix`. The CI release
-workflow runs the platform-matrix builds, writes each binary into
-`npm/platform/<os>-<cpu>/bin/`, generates the manifest, signs it,
-and publishes both the meta and platform packages. Local
-development uses `cargo install --git ...` instead.
+That bare invocation runs the full interactive flow against mainnet:
+it prompts for the mnemonic (no echo), scans for recoverable funds,
+prompts for a destination address, prints a To / Fee / Net summary,
+and broadcasts after a `[y/N]` confirmation.
+
+## What it recovers
+
+- **`to_remote` outputs from LSP force-closes** of v2
+  static_remote_key channels — both the P2WPKH (non-anchor) and
+  P2WSH anchor commitment-output flavours, across the 1000
+  enumerable key indices.
+- **BIP-84 on-chain funds** at `m/84h/{0,1}h/0h/{0,1}/i` with the
+  default 20-address gap limit per chain.
+
+Both are pure derivations from the seed — no prior wallet state,
+channel monitor, or VSS access required.
+
+## What it does not recover
+
+- **Our-side force-close outputs** (`to_local`, HTLC, justice). These
+  need the encrypted `ChannelMonitor` from VSS; a future VSS-backed
+  mode will cover them.
+- **Channels opened by ldk-node ≤ 0.6.x** (v1 per-channel script, not
+  enumerable from seed).
+- **In-flight HTLCs at the time of close.**
+
+If the seed is gone, nothing recovers anything.
+
+## Integrity
+
+Published from CI with provenance, so you can confirm where the
+package came from:
+
+```
+npm audit signatures
+```
+
+## Source, docs, and from-source builds
+
+Full documentation, the derivation paths, the regtest test harness,
+and `cargo install` instructions live in the repository:
+<https://github.com/moneydevkit/mdk-recovery>.

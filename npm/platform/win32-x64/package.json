@@ -2,6 +2,11 @@
   "name": "@moneydevkit/recovery-win32-x64",
   "version": "0.1.0",
   "description": "Windows x64 binary for @moneydevkit/recovery",
+  "homepage": "https://github.com/moneydevkit/mdk-recovery",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moneydevkit/mdk-recovery.git"
+  },
   "license": "MIT",
   "files": ["bin/"],
   "os": ["win32"],
