@@ -199,6 +199,24 @@
 
           fmt = craneLib.cargoFmt { inherit src; };
 
+          # Lint the GitHub Actions workflows. shellcheck on PATH means
+          # actionlint also checks the embedded `run:` shell scripts.
+          actionlint =
+            pkgs.runCommandLocal "actionlint"
+              {
+                nativeBuildInputs = [
+                  pkgs.actionlint
+                  pkgs.shellcheck
+                ];
+              }
+              ''
+                cp -r ${./.github} .github
+                # Pass files explicitly: outside a git checkout actionlint
+                # can't auto-detect the project root.
+                actionlint .github/workflows/*.yml
+                touch $out
+              '';
+
           test = craneLib.cargoNextest (
             commonArgs
             // {
@@ -215,9 +233,11 @@
               pkgsUnstable.bitcoind
             ]
             ++ (with pkgs; [
+              actionlint
               cargo-nextest
               just
               nixfmt-rfc-style
+              shellcheck
             ]);
 
             env = {
