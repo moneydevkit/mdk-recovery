@@ -142,18 +142,35 @@ assert the funds moved.
 ## Releasing
 
 ```
-just bump X.Y.Z           # branch + bump + commit + push
-
-# open a PR, merge to master, then from master:
-git tag vX.Y.Z
-git push origin vX.Y.Z
+just release X.Y.Z        # branch + bump + commit + push + open PR
+# review the release/vX.Y.Z PR and merge it
 ```
 
-Pre-releases use a semver hyphen (`X.Y.Z-rc.1`, `X.Y.Z-beta.0`).
+Merging a `release/*` PR is the whole release. CI reads the version
+from `Cargo.toml`, creates and pushes the matching `vX.Y.Z` tag, builds
+every platform binary at that commit, attests them, cuts the GitHub
+release, and publishes to npm. There is no hand-pushed tag, so the tag
+and the published version can't drift apart.
 
-To redo a tag:
+Pre-releases use a semver hyphen (`X.Y.Z-rc.1`, `X.Y.Z-beta.0`) and
+publish under the npm `next` dist-tag.
+
+## Deleting a bad release
+
+If a release published broken artifacts, tear it down before cutting a
+new one:
 
 ```
-git push --delete origin vX.Y.Z
-git tag -d vX.Y.Z
+gh release delete vX.Y.Z --yes    # GitHub release
+git push --delete origin vX.Y.Z   # remote tag
+git tag -d vX.Y.Z                 # local tag
 ```
+
+npm versions are immutable: you cannot republish `X.Y.Z` once it is
+live, and unpublishing is heavily restricted. So a redo always means a
+new version (bump the patch or the `-rc.N`), not the same one again.
+
+If the failure was caught mid-run before npm published, you can keep
+the version: delete the GitHub release and tag as above, fix the
+problem, and re-merge the `release/*` PR (or re-point the tag at the
+fixed commit).

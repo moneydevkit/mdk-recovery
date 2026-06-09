@@ -1,9 +1,9 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  pull_request:
+    types: [closed]
+    branches: [master]
 
 permissions:
   contents: write
@@ -11,25 +11,51 @@ permissions:
   attestations: write
 
 jobs:
-  check-version:
-    name: Verify tag matches Cargo.toml
+  tag:
+    name: Tag release from Cargo.toml
+    # Fires only when a release/* PR from this repo actually merges.
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.derive.outputs.tag }}
+      sha: ${{ steps.derive.outputs.sha }}
     steps:
-      - name: Checkout code
+      - name: Checkout merge commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
 
-      - name: Compare tag to Cargo.toml version
+      - name: Derive version and guard the tag
+        id: derive
         run: |
-          CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${CARGO_VERSION}"
+          VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          BRANCH_VER="${GITHUB_HEAD_REF#release/v}"
+          if [ "$VER" != "$BRANCH_VER" ]; then
+            echo "::error::Cargo.toml ${VER} does not match branch release/v${BRANCH_VER}"
             exit 1
           fi
+          TAG="v${VER}"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Tag ${TAG} already exists"
+            exit 1
+          fi
+          {
+            echo "tag=${TAG}"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        run: |
+          git tag "${{ steps.derive.outputs.tag }}" "${{ steps.derive.outputs.sha }}"
+          git push origin "${{ steps.derive.outputs.tag }}"
 
   build:
     name: Build (${{ matrix.triple }})
-    needs: check-version
+    needs: tag
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -48,8 +74,10 @@ jobs:
             triple: darwin-x64
             flake-output: .#darwin-x64
     steps:
-      - name: Checkout code
+      - name: Checkout tagged commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.tag.outputs.sha }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
@@ -71,13 +99,15 @@ jobs:
 
   build-windows:
     name: Build (win32-x64)
-    needs: check-version
+    needs: tag
     runs-on: windows-latest
     env:
       RUSTFLAGS: "-C target-feature=+crt-static"
     steps:
-      - name: Checkout code
+      - name: Checkout tagged commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.tag.outputs.sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -98,15 +128,17 @@ jobs:
           path: mdk-recovery-win32-x64.exe
 
   release:
-    name: Sign and publish
-    needs: [build, build-windows]
+    name: Publish
+    needs: [tag, build, build-windows]
     runs-on: ubuntu-latest
     defaults:
       run:
         shell: nix develop .#release --command bash -e {0}
     steps:
-      - name: Checkout code
+      - name: Checkout tagged commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.tag.outputs.sha }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
@@ -134,7 +166,7 @@ jobs:
 
       - name: Bump npm package versions to match tag
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ needs.tag.outputs.tag }}
         run: |
           VER="${VERSION#v}"
           # Pre-release tags (anything with a hyphen per semver, e.g.
@@ -172,6 +204,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
+          tag_name: ${{ needs.tag.outputs.tag }}
           generate_release_notes: true
           prerelease: ${{ env.NPM_TAG == 'next' }}
           files: |
