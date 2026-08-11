@@ -2,7 +2,7 @@
   description = "MDK Recovery";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
     fenix = {
       url = "github:nix-community/fenix";
